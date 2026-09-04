@@ -1,0 +1,28 @@
+name = "openwa-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+# One Durable Object per WhatsApp session. The DO owns the baileys socket, the
+# auth state (creds + signal keys) in its storage, and the reconnect loop.
+[[durable_objects.bindings]]
+name = "WHATSAPP_SESSION"
+class_name = "WhatsAppSession"
+
+# A single global Durable Object that tracks which session names exist (there is
+# no way to enumerate Durable Objects, so the index lives here instead of KV —
+# this keeps the project deployable with zero account-side setup).
+[[durable_objects.bindings]]
+name = "SESSION_REGISTRY"
+class_name = "SessionRegistry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WhatsAppSession", "SessionRegistry"]
+
+# Static UI. Served on `/` (anything outside /api and /health) by Cloudflare's
+# asset pipeline; the API lives on `/api/*`. Swap ./ui for your own build (e.g.
+# a Vite build of the OpenWA dashboard) when you have one.
+[assets]
+directory = "./ui"
+binding = "ASSETS"
