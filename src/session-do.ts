@@ -218,6 +218,9 @@ export class WhatsAppSession extends DurableObject<Env> {
       if (mapped.length > 0) {
         void this.appendHistory(mapped).catch(() => {});
       }
+      for (const message of mapped) {
+        void this.pushInboundWebhook(message).catch(() => {});
+      }
     });
   }
 
@@ -229,6 +232,32 @@ export class WhatsAppSession extends DurableObject<Env> {
     buf.push(...messages);
     const trimmed = buf.length > HISTORY_LIMIT ? buf.slice(-HISTORY_LIMIT) : buf;
     await this.ctx.storage.put('history', trimmed);
+  }
+
+  /**
+   * Fire-and-forget delivery of inbound messages to an optional external webhook.
+   * Deliberately generic: filters only self-messages, protocol/system noise and
+   * broadcast/newsletter/status jids; every consumer decides what to do with the rest.
+   */
+  private async pushInboundWebhook(message: Record<string, unknown>): Promise<void> {
+    const url = this.env.INBOUND_WEBHOOK_URL;
+    if (!url) return;
+    if (message.fromMe) return;
+    const chatId = String(message.chatId ?? '');
+    if (/(@broadcast|@newsletter|@status)/.test(chatId)) return;
+    if (String(message.type ?? '') === 'protocolMessage') return;
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    const token = this.env.INBOUND_WEBHOOK_TOKEN;
+    if (token) headers.authorization = `Bearer ${token}`;
+    await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        session: this.ctx.id.name,
+        at: new Date().toISOString(),
+        message,
+      }),
+    });
   }
 
   private async onConnectionUpdate(

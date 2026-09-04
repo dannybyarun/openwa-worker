@@ -14,4 +14,11 @@ export interface Env {
   API_TOKEN?: string;
   /** Optional baileys log verbosity (trace | debug | info | warn | error | fatal). Defaults to info. */
   LOG_LEVEL?: string;
+  /**
+   * Optional: when set, inbound (non-self) messages are POSTed here as JSON webhooks
+   * ({ session, at, message }) — the generic way any backend consumes the gateway.
+   */
+  INBOUND_WEBHOOK_URL?: string;
+  /** Optional bearer token sent with webhook deliveries (Authorization: Bearer). */
+  INBOUND_WEBHOOK_TOKEN?: string;
 }
