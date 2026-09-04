@@ -9,6 +9,18 @@ const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await handleFetch(request, env);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('handler crashed:', err);
+      const detail = err instanceof Error ? `${err.message} — ${err.stack?.split('\n')[1] ?? ''}`.trim() : JSON.stringify(err);
+      return error(`internal error: ${detail}`, 500);
+    }
+  },
+} satisfies ExportedHandler<Env>;
+
+async function handleFetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
@@ -95,8 +107,7 @@ export default {
     }
 
     return cors(error('not found', 404));
-  },
-} satisfies ExportedHandler<Env>;
+}
 
 async function listSessions(env: Env): Promise<Response> {
   const registry = env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry'));

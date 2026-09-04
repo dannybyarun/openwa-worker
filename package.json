@@ -4,12 +4,12 @@
   "private": true,
   "description": "OpenWA WhatsApp gateway for Cloudflare Workers — baileys connection layer + minimal API, UI-agnostic (bring your own static frontend).",
   "scripts": {
-    "postinstall": "node scripts/patch-baileys-worker-socket.js",
+    "postinstall": "node scripts/patch-baileys-worker-socket.js && node scripts/patch-baileys-link-preview.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
-    "test": "node --test scripts/patch-baileys-worker-socket.spec.js"
+    "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14"
