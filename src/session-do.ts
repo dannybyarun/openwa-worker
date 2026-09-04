@@ -306,18 +306,58 @@ export class WhatsAppSession extends DurableObject<Env> {
 
   // --- commands ---------------------------------------------------------------
 
-  private async sendText(chatId: string, text: string): Promise<Record<string, unknown>> {
-    await this.ensureConnected();
-    const sock = this.sock;
-    if (!sock?.ws.isOpen) {
-      throw new Error('session is not connected — start it first');
+  /**
+   * Wait until the current socket is genuinely open, or until the deadline.
+   * ensureConnected() resolves as soon as a socket exists — after a DO wake the
+   * connection can still be establishing, and sends started too early fail or
+   * hit a half-dead socket ("All encryptions failed").
+   */
+  private async waitForOpen(deadlineMs = 20_000): Promise<boolean> {
+    const started = Date.now();
+    while (Date.now() - started < deadlineMs) {
+      if (this.sock?.ws.isOpen) return true;
+      await new Promise(resolve => setTimeout(resolve, 250));
     }
-    const sent = await sock.sendMessage(chatId, { text });
-    return {
-      id: sent?.key?.id ?? null,
-      chatId,
-      timestamp: new Date().toISOString(),
-    };
+    return Boolean(this.sock?.ws.isOpen);
+  }
+
+  private async sendText(chatId: string, text: string): Promise<Record<string, unknown>> {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await this.ensureConnected();
+      if (!(await this.waitForOpen())) {
+        throw new Error('session is not connected — start it first');
+      }
+      const sock = this.sock;
+      if (!sock) throw new Error('session is not connected — start it first');
+      try {
+        const sent = await sock.sendMessage(chatId, { text });
+        return {
+          id: sent?.key?.id ?? null,
+          chatId,
+          timestamp: new Date().toISOString(),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const retryable =
+          /encrypt|stream errored|restart required|connection terminated|timed\s*out|closed|not connected/i.test(
+            message,
+          );
+        if (attempt === 2 || !retryable) throw err;
+        // The socket reported open but its stream was dead (a long-resident DO
+        // can outlive a "Stream Errored"). Tear it down and reconnect once — a
+        // fresh socket fixes stale-signal failures like "All encryptions failed".
+        if (sock === this.sock) {
+          this.sock = undefined;
+          try {
+            sock.ws.close();
+          } catch {
+            // already closed
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error('send failed');
   }
 
   private async logout(): Promise<void> {
