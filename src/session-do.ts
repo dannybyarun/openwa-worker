@@ -17,7 +17,7 @@ import type { Env } from './env';
 const ALARM_INTERVAL_MS = 2 * 60_000; // bound the disconnected window after a DO eviction
 const BASE_RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
-const FALLBACK_WA_VERSION = [2, 3000, 0] as const;
+const PINNED_WA_VERSION = [2, 3000, 1033893291] as const;
 const HISTORY_LIMIT = 200; // most recent messages kept per session (storage key 'history')
 
 export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'closed' | 'loggedOut';
@@ -189,15 +189,13 @@ export class WhatsAppSession extends DurableObject<Env> {
   }
 
   private async resolveVersion(): Promise<[number, number, number]> {
+    // Pinned: fetchLatestBaileysVersion() currently returns a WA version the
+    // servers reject during/after pairing ("Connection Failure", status 405,
+    // WhiskeySockets/Baileys#2370). [2, 3000, 1033893291] is the community-
+    // confirmed working pin; bump deliberately, not automatically.
     if (this.cachedVersion) return this.cachedVersion;
-    try {
-      const { version } = await fetchLatestBaileysVersion();
-      this.cachedVersion = version;
-      return version;
-    } catch {
-      this.cachedVersion = [...FALLBACK_WA_VERSION];
-      return this.cachedVersion;
-    }
+    this.cachedVersion = [...PINNED_WA_VERSION];
+    return this.cachedVersion;
   }
 
   private wire(sock: WASocket): void {
