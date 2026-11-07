@@ -25,6 +25,7 @@ const MAX_MESSAGE_LIMIT = 200;
 const BASE_RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 const FALLBACK_WA_VERSION = [2, 3000, 0] as const;
+const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // Apps Script relays statements as base64; keep the DO memory bounded
 const HISTORY_LIMIT = 200; // most recent unacked messages kept per session (storage key 'history')
 
 export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'idle' | 'closed' | 'loggedOut';
@@ -47,6 +48,25 @@ function clampWait(raw: string | null): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_WAIT_MS;
   return Math.min(Math.max(Math.floor(value), 0), MAX_WAIT_MS);
+}
+
+/**
+ * Strict base64 → bytes. Apps Script always sends padded standard base64, but tolerate
+ * whitespace/newlines and the URL-safe alphabet so a hand-written curl still works.
+ * Returns null for input that is not decodable.
+ */
+function decodeBase64Document(raw: string): Uint8Array | null {
+  const cleaned = raw.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  if (!cleaned || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned)) return null;
+  const padded = cleaned + '='.repeat((4 - (cleaned.length % 4)) % 4);
+  try {
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
 }
 
 function mapMessage(m: WAMessage): Record<string, unknown> {
@@ -180,6 +200,35 @@ export class WhatsAppSession extends DurableObject<Env> {
         const budget = await this.bumpWake(!this.sock?.ws.isOpen);
         if (!budget.allowed) return this.wakeLimitError(budget);
         return json(await this.sendText(body.chatId, body.text));
+      }
+      // Documents (PDF/XLSX statements) travel as base64 so no R2 bucket is required.
+      if (request.method === 'POST' && action === 'send-document') {
+        const body = (await request.json().catch(() => null)) as {
+          chatId?: string;
+          base64?: string;
+          fileName?: string;
+          mimetype?: string;
+          caption?: string;
+        } | null;
+        if (!body?.chatId || typeof body.base64 !== 'string' || !body.fileName) {
+          return error('chatId, base64 and fileName are required', 400);
+        }
+        const buffer = decodeBase64Document(body.base64);
+        if (!buffer) return error('base64 is not valid base64', 400);
+        if (buffer.length === 0) return error('document is empty', 400);
+        if (buffer.length > MAX_DOCUMENT_BYTES) {
+          return error(`document is too large (max ${MAX_DOCUMENT_BYTES} bytes)`, 413);
+        }
+        const budget = await this.bumpWake(!this.sock?.ws.isOpen);
+        if (!budget.allowed) return this.wakeLimitError(budget);
+        return json(
+          await this.sendDocument(body.chatId, {
+            data: buffer,
+            fileName: body.fileName,
+            mimetype: body.mimetype || 'application/octet-stream',
+            caption: typeof body.caption === 'string' ? body.caption : '',
+          }),
+        );
       }
       if (request.method === 'POST' && action === 'logout') {
         await this.logout();
@@ -564,6 +613,59 @@ export class WhatsAppSession extends DurableObject<Env> {
         // The socket reported open but its stream was dead (a long-resident DO
         // can outlive a "Stream Errored"). Tear it down and reconnect once — a
         // fresh socket fixes stale-signal failures like "All encryptions failed".
+        if (sock === this.sock) {
+          this.sock = undefined;
+          try {
+            sock.ws.close();
+          } catch {
+            // already closed
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error('send failed');
+  }
+
+  private async sendDocument(
+    chatId: string,
+    doc: { data: Uint8Array; fileName: string; mimetype: string; caption: string },
+  ): Promise<Record<string, unknown>> {
+    // Same wake/retry contract as sendText: one idle window, one stale-socket retry.
+    await this.activate();
+    await this.markConnecting();
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await this.ensureConnected();
+      if (!(await this.waitForOpen())) {
+        throw new Error('session is not connected — start it first');
+      }
+      const sock = this.sock;
+      if (!sock) throw new Error('session is not connected — start it first');
+      try {
+        const sent = await sock.sendMessage(chatId, {
+          // Baileys' media pipeline checks Buffer.isBuffer(); a plain Uint8Array
+          // falls through to the URL branch and throws. Buffer is available via
+          // nodejs_compat.
+          document: Buffer.from(doc.data),
+          fileName: doc.fileName,
+          mimetype: doc.mimetype,
+          ...(doc.caption ? { caption: doc.caption } : {}),
+        });
+        return {
+          id: sent?.key?.id ?? null,
+          chatId,
+          fileName: doc.fileName,
+          mimetype: doc.mimetype,
+          bytes: doc.data.length,
+          timestamp: new Date().toISOString(),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const retryable =
+          /encrypt|stream errored|restart required|connection terminated|timed\s*out|closed|not connected/i.test(
+            message,
+          );
+        if (attempt === 2 || !retryable) throw err;
         if (sock === this.sock) {
           this.sock = undefined;
           try {

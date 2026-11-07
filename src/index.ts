@@ -108,6 +108,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
         body: JSON.stringify(await request.json().catch(() => null)),
       })));
     }
+    if (request.method === 'POST' && action === 'send-document') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/send-document`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(await request.json().catch(() => null)),
+      })));
+    }
     if ((request.method === 'POST' || request.method === 'DELETE') && action === 'logout') {
       const doResult = await stub.fetch(new Request(`${stubUrl(request)}/logout`, { method: 'POST' }));
       await env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry')).fetch(
