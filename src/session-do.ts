@@ -119,6 +119,12 @@ export class WhatsAppSession extends DurableObject<Env> {
   private cachedVersion?: [number, number, number];
   private statusCache?: SessionStatus;
   private historyBuf?: StoredMessage[];
+  /**
+   * True only after Baileys emits `connection: open`. The raw WebSocket being open is not
+   * enough: the Noise handshake still has to finish, and sending into that window fails with
+   * "Network connection lost" (notably on the first send after a cold wake).
+   */
+  private connected = false;
 
   async fetch(request: Request): Promise<Response> {
     // The worker forwards /api/sessions/:id/:action RAW to this DO — preserving the WS
@@ -291,6 +297,7 @@ export class WhatsAppSession extends DurableObject<Env> {
   /** Close the socket and park the session. Safe to call when already idle. */
   private async goIdle(): Promise<void> {
     this.activeUntil = 0;
+    this.connected = false;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = undefined;
@@ -393,6 +400,7 @@ export class WhatsAppSession extends DurableObject<Env> {
       cachedGroupMetadata: async () => undefined,
     });
     this.sock = sock;
+    this.connected = false;
     this.intentionalClose = false;
     this.wire(sock);
     // Errors are surfaced through connection.update('close'); do not throw here.
@@ -538,12 +546,14 @@ export class WhatsAppSession extends DurableObject<Env> {
     if (connection === 'open' || isNewLogin) {
       status.status = 'connected';
       status.qr = undefined;
+      this.connected = true;
       this.reconnectAttempts = 0;
       if (sock.user) {
         status.me = { id: sock.user.id, name: sock.user.name };
       }
     }
     if (connection === 'close') {
+      this.connected = false;
       const code = lastDisconnectCode(lastDisconnect?.error);
       status.lastDisconnect = {
         code,
@@ -579,10 +589,10 @@ export class WhatsAppSession extends DurableObject<Env> {
   private async waitForOpen(deadlineMs = 20_000): Promise<boolean> {
     const started = Date.now();
     while (Date.now() - started < deadlineMs) {
-      if (this.sock?.ws.isOpen) return true;
+      if (this.connected && this.sock?.ws.isOpen) return true;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
-    return Boolean(this.sock?.ws.isOpen);
+    return Boolean(this.connected && this.sock?.ws.isOpen);
   }
 
   private async sendText(chatId: string, text: string): Promise<Record<string, unknown>> {
@@ -606,7 +616,7 @@ export class WhatsAppSession extends DurableObject<Env> {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const retryable =
-          /encrypt|stream errored|restart required|connection terminated|timed\s*out|closed|not connected/i.test(
+          /encrypt|stream errored|restart required|connection terminated|connection lost|network connection lost|timed\s*out|closed|not connected/i.test(
             message,
           );
         if (attempt === 2 || !retryable) throw err;
@@ -662,7 +672,7 @@ export class WhatsAppSession extends DurableObject<Env> {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const retryable =
-          /encrypt|stream errored|restart required|connection terminated|timed\s*out|closed|not connected/i.test(
+          /encrypt|stream errored|restart required|connection terminated|connection lost|network connection lost|timed\s*out|closed|not connected/i.test(
             message,
           );
         if (attempt === 2 || !retryable) throw err;
