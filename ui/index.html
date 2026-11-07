@@ -57,6 +57,7 @@
   }
   .chip.connected { color: #fff; background: var(--accent-2); border-color: var(--accent-2); }
   .chip.qr, .chip.connecting { color: var(--warn); border-color: var(--warn); }
+  .chip.idle { color: var(--muted); border-color: var(--border); }
   .chip.closed, .chip.loggedOut { color: var(--danger); border-color: var(--danger); }
   #create-form { display: flex; gap: 6px; margin-top: 10px; }
   #create-form input { flex: 1; }
@@ -117,7 +118,7 @@
       <h2 id="session-title">—</h2>
       <span id="status-chip" class="chip">—</span>
       <div id="session-actions">
-        <button id="btn-start">Start</button>
+        <button id="btn-start">Wake</button>
         <button id="btn-refresh">Refresh</button>
         <button id="btn-logout" class="danger">Logout</button>
       </div>
@@ -312,7 +313,7 @@ async function startSession() {
   if (!current) return;
   try {
     await api(`/api/sessions/${encodeURIComponent(current)}/start`, { method: 'POST' });
-    notice('Session started — waiting for the connection');
+    notice('Waking session — socket stays open for a short window, then goes idle');
     await refreshStatus();
   } catch (err) {
     notice(`Start: ${err.message}`);
@@ -385,11 +386,14 @@ function renderStatus(st) {
   if (st.status === 'connected') {
     qrPanel.hidden = true;
     $('conn-note').textContent = `Connected as ${st.me?.id ?? 'unknown'}`;
+  } else if (st.status === 'idle') {
+    qrPanel.hidden = true;
+    $('conn-note').textContent = 'Idle — no socket held. Wake it (or let the poller drain) to reconnect.';
   } else if (st.status === 'new' || st.status === 'closed') {
     qrPanel.hidden = true;
     $('conn-note').textContent = st.status === 'closed' && st.lastDisconnect
       ? `Disconnected (${st.lastDisconnect.code ?? '?'}) — ${st.lastDisconnect.message ?? ''}`
-      : 'Session not started — press Start';
+      : 'Session not started — press Wake';
   } else {
     qrPanel.hidden = true;
     $('conn-note').textContent = st.status;

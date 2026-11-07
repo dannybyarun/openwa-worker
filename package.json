@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
-    "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js"
+    "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js scripts/cursor.spec.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14"

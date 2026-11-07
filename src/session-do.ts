@@ -12,15 +12,22 @@ import {
 import { DurableObjectAuthState } from './auth-state';
 import { createWorkerLogger } from './logger';
 import { error, json } from './http';
+import { normalizeSequences, pruneAcked, selectMessages, type StoredMessage } from './messages';
 import type { Env } from './env';
 
-const ALARM_INTERVAL_MS = 2 * 60_000; // bound the disconnected window after a DO eviction
+const DEFAULT_IDLE_TTL_MS = 60_000; // connected window per wake; the /idle route closes sooner
+const PAIRING_TTL_MULTIPLIER = 5; // Start gets a longer window so the QR can be scanned
+const DEFAULT_DAILY_WAKE_LIMIT = 300; // ~288 polls/day at 5-min cadence; 0 disables the cap
+const DEFAULT_WAIT_MS = 15_000;
+const MAX_WAIT_MS = 20_000;
+const DEFAULT_MESSAGE_LIMIT = 100;
+const MAX_MESSAGE_LIMIT = 200;
 const BASE_RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 const FALLBACK_WA_VERSION = [2, 3000, 0] as const;
-const HISTORY_LIMIT = 200; // most recent messages kept per session (storage key 'history')
+const HISTORY_LIMIT = 200; // most recent unacked messages kept per session (storage key 'history')
 
-export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'closed' | 'loggedOut';
+export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'idle' | 'closed' | 'loggedOut';
 
 export interface SessionStatus {
   status: SessionStatusName;
@@ -33,6 +40,13 @@ export interface SessionStatus {
 function lastDisconnectCode(error: unknown): number | undefined {
   const boom = error as { output?: { statusCode?: number }; statusCode?: number };
   return boom?.output?.statusCode ?? boom?.statusCode;
+}
+
+/** `?wait=` for /wake: how long to hold the request until the socket is open. */
+function clampWait(raw: string | null): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_WAIT_MS;
+  return Math.min(Math.max(Math.floor(value), 0), MAX_WAIT_MS);
 }
 
 function mapMessage(m: WAMessage): Record<string, unknown> {
@@ -64,13 +78,14 @@ function mapMessage(m: WAMessage): Record<string, unknown> {
  * One WhatsApp session = one Durable Object instance (idFromName(sessionName)).
  *
  * The DO owns the baileys socket, the auth state (creds + signal keys) in its storage, and the
- * reconnect loop. UI clients subscribe to `GET /events` (WebSocket upgrade) and receive a JSON
+ * message cursor. UI clients subscribe to `GET /events` (WebSocket upgrade) and receive a JSON
  * event stream (`connection.update` + `message` events).
  *
- * Platform caveat (documented in README): an *outbound* WebSocket keeps a Durable Object resident
- * for up to 15 minutes, then stops preventing eviction. After an eviction the WA socket is gone, so
- * this DO re-arms a 2-minute alarm that reconnects, and baileys reconnects on its own while
- * resident. WhatsApp queues pending messages and delivers them after reconnect, so nothing is lost.
+ * Lazy mode (free-tier posture): nobody holds the socket open. `/wake`, `/start` and `/send-text`
+ * open a short window (`IDLE_TTL_MS`), the puller drains with `GET /messages?after=`, and
+ * `POST /ack` + `POST /idle` close it again. There is no recurring alarm. WhatsApp queues messages
+ * while offline and delivers them on the next wake, so latency is bounded by the poll cadence
+ * instead of burning Durable Object Duration 24/7.
  */
 export class WhatsAppSession extends DurableObject<Env> {
   private sock?: WASocket;
@@ -79,10 +94,11 @@ export class WhatsAppSession extends DurableObject<Env> {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempts = 0;
   private intentionalClose = false;
-  private alarmsArmed = false;
+  private idleTimer?: ReturnType<typeof setTimeout>;
+  private activeUntil = 0;
   private cachedVersion?: [number, number, number];
   private statusCache?: SessionStatus;
-  private historyBuf?: Record<string, unknown>[];
+  private historyBuf?: StoredMessage[];
 
   async fetch(request: Request): Promise<Response> {
     // The worker forwards /api/sessions/:id/:action RAW to this DO — preserving the WS
@@ -93,8 +109,6 @@ export class WhatsAppSession extends DurableObject<Env> {
     const segments = url.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
     const action = segments[segments.length - 1] ?? '';
     try {
-      await this.armAlarm();
-
       if (request.method === 'GET' && action === 'events') {
         return this.handleEventsUpgrade(request);
       }
@@ -106,12 +120,53 @@ export class WhatsAppSession extends DurableObject<Env> {
         return json({ id: this.ctx.id.name, status: status.status, qr: status.qr });
       }
       if (request.method === 'GET' && action === 'history') {
-        const history = (await this.ctx.storage.get<Record<string, unknown>[]>('history')) ?? [];
+        const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
         return json({ id: this.ctx.id.name, messages: history.slice().reverse() });
       }
-      if (request.method === 'POST' && action === 'start') {
+      // Lazy mode: connect for one drain window, then close. See /idle and /ack?close=1.
+      if (request.method === 'POST' && action === 'wake') {
+        const wait = clampWait(url.searchParams.get('wait'));
+        const budget = await this.bumpWake(!this.sock?.ws.isOpen);
+        if (!budget.allowed) return this.wakeLimitError(budget);
+        await this.activate();
+        await this.markConnecting();
         await this.ensureConnected();
+        if (wait > 0) await this.waitForOpen(wait);
+        return json({ id: this.ctx.id.name, ...(await this.getStatus()), wake: budget });
+      }
+      // Cursor API for Apps Script / any puller. Returns oldest-first, each message carrying `seq`.
+      if (request.method === 'GET' && action === 'messages') {
+        const after = Math.max(0, Math.floor(Number(url.searchParams.get('after')) || 0));
+        const limitRaw = Math.floor(Number(url.searchParams.get('limit')) || DEFAULT_MESSAGE_LIMIT);
+        const limit = Math.min(Math.max(limitRaw, 1), MAX_MESSAGE_LIMIT);
+        return json(await this.listMessages(after, limit));
+      }
+      if (request.method === 'POST' && action === 'ack') {
+        const body = (await request.json().catch(() => null)) as { upto?: number; close?: boolean } | null;
+        const fromQuery = Number(url.searchParams.get('upto'));
+        const upto = Number(body?.upto ?? (Number.isFinite(fromQuery) ? fromQuery : NaN));
+        if (!Number.isFinite(upto) || upto < 0) {
+          return error('upto is required (non-negative integer)', 400);
+        }
+        const result = await this.ackMessages(Math.floor(upto));
+        const close = body?.close === true || url.searchParams.get('close') === '1';
+        if (close) await this.goIdle();
+        return json(result);
+      }
+      // Close the socket now instead of waiting for the idle timer — keeps free-tier duration low.
+      if (request.method === 'POST' && action === 'idle') {
+        await this.goIdle();
         return json({ id: this.ctx.id.name, ...(await this.getStatus()) });
+      }
+      if (request.method === 'POST' && action === 'start') {
+        const budget = await this.bumpWake(!this.sock?.ws.isOpen);
+        if (!budget.allowed) return this.wakeLimitError(budget);
+        const status = await this.getStatus();
+        const pairing = status.status !== 'connected';
+        await this.activate(pairing ? this.idleTtlMs * PAIRING_TTL_MULTIPLIER : this.idleTtlMs);
+        await this.markConnecting();
+        await this.ensureConnected();
+        return json({ id: this.ctx.id.name, ...(await this.getStatus()), wake: budget });
       }
       if (request.method === 'POST' && action === 'send-text') {
         const body = (await request.json().catch(() => null)) as {
@@ -121,6 +176,9 @@ export class WhatsAppSession extends DurableObject<Env> {
         if (!body?.chatId || typeof body.text !== 'string') {
           return error('chatId and text are required', 400);
         }
+        // Sending opens a window too, so it counts against the same budget when it has to connect.
+        const budget = await this.bumpWake(!this.sock?.ws.isOpen);
+        if (!budget.allowed) return this.wakeLimitError(budget);
         return json(await this.sendText(body.chatId, body.text));
       }
       if (request.method === 'POST' && action === 'logout') {
@@ -143,6 +201,110 @@ export class WhatsAppSession extends DurableObject<Env> {
   async ensureConnected(): Promise<void> {
     if (this.sock?.ws.isOpen) return;
     await this.establish();
+  }
+
+  private get idleTtlMs(): number {
+    const raw = Number(this.env.IDLE_TTL_MS);
+    if (!Number.isFinite(raw) || raw < 5_000) return DEFAULT_IDLE_TTL_MS;
+    return Math.min(Math.floor(raw), 15 * 60_000);
+  }
+
+  private get dailyWakeLimit(): number {
+    const raw = Number(this.env.DAILY_WAKE_LIMIT);
+    if (!Number.isFinite(raw) || raw < 0) return DEFAULT_DAILY_WAKE_LIMIT;
+    return Math.floor(raw);
+  }
+
+  /** Surface intent in /status immediately — baileys only emits qr/connected after its handshake. */
+  private async markConnecting(): Promise<void> {
+    const status = await this.getStatus();
+    if (status.status !== 'new' && status.status !== 'idle' && status.status !== 'closed') return;
+    status.status = 'connecting';
+    status.qr = undefined;
+    await this.persistStatus(status);
+    this.broadcast({ type: 'connection.update', data: { id: this.ctx.id.name, status: 'connecting' } });
+  }
+
+  /**
+   * Arm (or extend) the connected window. This is the only thing that keeps the socket alive:
+   * a wake/start/send sets a timer, and when it fires the DO closes the socket and goes idle.
+   * There is no recurring alarm and no reconnect outside an active window — that is what keeps
+   * free-tier Duration (13,000 GB-s/day) in reach for several sessions.
+   */
+  private async activate(ttlMs = this.idleTtlMs): Promise<void> {
+    this.activeUntil = Date.now() + ttlMs;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      void this.goIdle().catch(() => {});
+    }, ttlMs);
+  }
+
+  /** Close the socket and park the session. Safe to call when already idle. */
+  private async goIdle(): Promise<void> {
+    this.activeUntil = 0;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.intentionalClose = true;
+    const sock = this.sock;
+    this.sock = undefined;
+    if (sock) {
+      try {
+        sock.end(undefined);
+      } catch {
+        // already closed
+      }
+      try {
+        sock.ws.close();
+      } catch {
+        // already closed
+      }
+    }
+    const status = await this.getStatus();
+    if (status.status !== 'loggedOut') {
+      status.status = 'idle';
+      status.qr = undefined;
+      await this.persistStatus(status);
+    }
+    this.broadcast({ type: 'connection.update', data: { id: this.ctx.id.name, status: 'idle' } });
+  }
+
+  /** Count one connect attempt against the per-UTC-day budget (eviction-proof; no duration math). */
+  private async bumpWake(count = true): Promise<{
+    allowed: boolean;
+    used: number;
+    limit: number;
+    date: string;
+    counted: boolean;
+  }> {
+    const date = new Date().toISOString().slice(0, 10);
+    const limit = this.dailyWakeLimit;
+    if (limit === 0) return { allowed: true, used: 0, limit, date, counted: false };
+    const stored = (await this.ctx.storage.get<{ date: string; count: number }>('wakes')) ?? {
+      date,
+      count: 0,
+    };
+    const used = stored.date === date ? stored.count : 0;
+    if (!count) {
+      // Already connected: waking only extends the window, so it must not eat the budget.
+      return { allowed: true, used, limit, date, counted: false };
+    }
+    if (used >= limit) return { allowed: false, used, limit, date, counted: false };
+    await this.ctx.storage.put('wakes', { date, count: used + 1 });
+    return { allowed: true, used: used + 1, limit, date, counted: true };
+  }
+
+  private wakeLimitError(budget: { used: number; limit: number }): Response {
+    return error(
+      `daily wake limit reached (${budget.used}/${budget.limit}); resets at 00:00 UTC — ` +
+        'raise DAILY_WAKE_LIMIT or lower the poll frequency',
+      429,
+    );
   }
 
   private get logLevel(): 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' {
@@ -208,30 +370,79 @@ export class WhatsAppSession extends DurableObject<Env> {
       void this.auth?.persist().catch(() => {});
     });
     sock.ev.on('messages.upsert', ({ messages }) => {
-      const mapped: Record<string, unknown>[] = [];
-      for (const message of messages) {
-        if (message.key?.remoteJid) {
-          mapped.push(mapMessage(message));
-          this.broadcast({ type: 'message', data: mapped[mapped.length - 1] });
-        }
-      }
-      if (mapped.length > 0) {
-        void this.appendHistory(mapped).catch(() => {});
-      }
-      for (const message of mapped) {
-        void this.pushInboundWebhook(message).catch(() => {});
-      }
+      void this.handleIncoming(messages).catch(() => {});
     });
   }
 
-  /** Persist the last HISTORY_LIMIT messages so a (re)loading UI can render chat history. */
-  private async appendHistory(messages: Record<string, unknown>[]): Promise<void> {
-    const buf =
-      this.historyBuf ?? ((await this.ctx.storage.get<Record<string, unknown>[]>('history')) ?? []);
-    this.historyBuf = buf;
-    buf.push(...messages);
+  /**
+   * Persist first, then broadcast: the stored copy carries `seq`, so the live UI stream and
+   * the Apps Script cursor see the same message ids and ordering.
+   */
+  private async handleIncoming(messages: WAMessage[]): Promise<void> {
+    const mapped: Record<string, unknown>[] = [];
+    for (const message of messages) {
+      if (message.key?.remoteJid) mapped.push(mapMessage(message));
+    }
+    if (mapped.length === 0) return;
+    const stored = await this.appendHistory(mapped);
+    for (const message of stored) {
+      this.broadcast({ type: 'message', data: message });
+      void this.pushInboundWebhook(message).catch(() => {});
+    }
+  }
+
+  /**
+   * Persist messages with a monotonic per-session `seq` (the drain cursor) and return the stored
+   * copies. Unacked messages are capped at HISTORY_LIMIT; a client that falls further behind than
+   * the cap can recover via the `oldestSeq` returned by GET /messages.
+   */
+  private async appendHistory(messages: Record<string, unknown>[]): Promise<StoredMessage[]> {
+    const snapshot = await this.ctx.storage.get<unknown>(['history', 'msgSeq']);
+    const storedBuf = (snapshot.get('history') as StoredMessage[] | undefined) ?? [];
+    const normalized = normalizeSequences(
+      this.historyBuf ?? storedBuf,
+      Number(snapshot.get('msgSeq') ?? 0),
+    );
+    const buf = normalized.rows;
+    let seq = normalized.maxSeq;
+    const added = messages.map(message => ({ ...message, seq: ++seq }));
+    buf.push(...added);
     const trimmed = buf.length > HISTORY_LIMIT ? buf.slice(-HISTORY_LIMIT) : buf;
-    await this.ctx.storage.put('history', trimmed);
+    this.historyBuf = trimmed;
+    await this.ctx.storage.put({ history: trimmed, msgSeq: seq });
+    return added;
+  }
+
+  /** Keyset pull: messages with seq > after, oldest first. `nextCursor` never goes backwards. */
+  private async listMessages(after: number, limit: number): Promise<Record<string, unknown>> {
+    const snapshot = await this.ctx.storage.get<unknown>(['history', 'msgSeq']);
+    const rawHistory = (snapshot.get('history') as StoredMessage[] | undefined) ?? [];
+    const msgSeq = Number(snapshot.get('msgSeq') ?? 0);
+    const normalized = normalizeSequences(rawHistory, msgSeq);
+    if (normalized.changed) {
+      // One-time migration for sessions created before the cursor API existed.
+      this.historyBuf = normalized.rows;
+      await this.ctx.storage.put({ history: normalized.rows, msgSeq: normalized.maxSeq });
+    }
+    return { id: this.ctx.id.name, ...selectMessages(normalized.rows, normalized.maxSeq, after, limit) };
+  }
+
+  /** Drop messages at or below `upto`. Apps Script calls this only after the rows hit the sheet. */
+  private async ackMessages(upto: number): Promise<Record<string, unknown>> {
+    const snapshot = await this.ctx.storage.get<unknown>(['history', 'msgSeq']);
+    const stored = (snapshot.get('history') as StoredMessage[] | undefined) ?? [];
+    const normalized = normalizeSequences(stored, Number(snapshot.get('msgSeq') ?? 0));
+    const remaining = pruneAcked(normalized.rows, upto);
+    if (normalized.changed || remaining.length !== stored.length) {
+      await this.ctx.storage.put('history', remaining);
+    }
+    this.historyBuf = remaining;
+    return {
+      id: this.ctx.id.name,
+      upto,
+      acked: stored.length - remaining.length,
+      remaining: remaining.length,
+    };
   }
 
   /**
@@ -264,6 +475,10 @@ export class WhatsAppSession extends DurableObject<Env> {
     sock: WASocket,
     update: BaileysEventMap['connection.update'],
   ): Promise<void> {
+    // A replaced socket must not write status or schedule reconnects — /idle clears this.sock
+    // before closing, so the resulting close event arrives here as a stale one.
+    if (update.connection === 'close' && sock !== this.sock) return;
+
     const status = await this.getStatus();
     const { qr, connection, lastDisconnect, isNewLogin } = update;
 
@@ -290,7 +505,7 @@ export class WhatsAppSession extends DurableObject<Env> {
         status.status = 'loggedOut';
         status.qr = undefined;
       } else if (this.intentionalClose) {
-        status.status = 'closed';
+        status.status = 'idle';
       } else {
         status.status = 'closed';
         this.scheduleReconnect();
@@ -322,6 +537,9 @@ export class WhatsAppSession extends DurableObject<Env> {
   }
 
   private async sendText(chatId: string, text: string): Promise<Record<string, unknown>> {
+    // Sending is a wake: hold the socket for at least one idle window while we send.
+    await this.activate();
+    await this.markConnecting();
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await this.ensureConnected();
       if (!(await this.waitForOpen())) {
@@ -362,6 +580,11 @@ export class WhatsAppSession extends DurableObject<Env> {
 
   private async logout(): Promise<void> {
     this.intentionalClose = true;
+    this.activeUntil = 0;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
     const sock = this.sock;
     if (sock) {
       try {
@@ -383,28 +606,31 @@ export class WhatsAppSession extends DurableObject<Env> {
     this.broadcast({ type: 'connection.update', data: { id: this.ctx.id.name, status: 'loggedOut' } });
   }
 
-  // --- reconnection & alarm -----------------------------------------------------
+  // --- connectivity -------------------------------------------------------------
 
+  /**
+   * Retry only inside an active window. Lazy mode never reconnects on its own: once the idle
+   * window expires (or /idle is called), the next wake is what brings the socket back.
+   */
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+    if (Date.now() >= this.activeUntil) return;
     const delay = Math.min(MAX_RECONNECT_DELAY_MS, BASE_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
+      if (Date.now() >= this.activeUntil) return;
       void this.ensureConnected().catch(() => {});
     }, delay);
   }
 
-  private async armAlarm(): Promise<void> {
-    if (this.alarmsArmed) return;
-    this.alarmsArmed = true;
-    await this.ctx.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
-  }
-
-  /** Fires while resident (reconnect if the socket died) or wakes an evicted DO (reconnect). */
+  /**
+   * Migration tombstone: earlier versions armed a 2-minute reconnect alarm on every request.
+   * Alarms are the expensive part of an always-on session, so lazy mode deletes any pending
+   * one and never re-arms it.
+   */
   async alarm(): Promise<void> {
-    await this.ensureConnected().catch(() => {});
-    await this.ctx.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+    await this.ctx.storage.deleteAlarm();
   }
 
   // --- UI event stream ------------------------------------------------------------
@@ -425,9 +651,9 @@ export class WhatsAppSession extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** A message from a UI socket wakes an evicted DO — use it to reconnect and re-arm. */
+  /** Lazy mode: UI socket traffic must not wake or extend the WhatsApp connection. */
   async webSocketMessage(_ws: WebSocket, _message: ArrayBuffer | string): Promise<void> {
-    void this.ensureConnected().catch(() => {});
+    // intentionally empty — only /wake, /start and /send-text bring the socket up
   }
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {

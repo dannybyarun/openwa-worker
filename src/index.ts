@@ -81,6 +81,23 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && action === 'history') {
       return cors(await stub.fetch(new Request(`${stubUrl(request)}/history`, { method: 'GET' })));
     }
+    // Lazy-session pull API. Query strings are forwarded verbatim (wait / after / limit / upto).
+    if (request.method === 'POST' && action === 'wake') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/wake${url.search}`, { method: 'POST' })));
+    }
+    if (request.method === 'GET' && action === 'messages') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/messages${url.search}`, { method: 'GET' })));
+    }
+    if (request.method === 'POST' && action === 'ack') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/ack${url.search}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(await request.json().catch(() => null)),
+      })));
+    }
+    if (request.method === 'POST' && action === 'idle') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/idle`, { method: 'POST' })));
+    }
     if (request.method === 'POST' && action === 'start') {
       return cors(await stub.fetch(new Request(`${stubUrl(request)}/start`, { method: 'POST' })));
     }
@@ -141,12 +158,13 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   const stub = env.WHATSAPP_SESSION.get(env.WHATSAPP_SESSION.idFromName(name));
   let status = 'new';
   try {
-    const res = (await stub.fetch('https://session/start', { method: 'POST' }).then(r => r.json())) as {
-      status: string;
-    };
-    status = res.status;
+    const res = await stub.fetch('https://session/start', { method: 'POST' });
+    const payload = (await res.json().catch(() => null)) as { status?: string } | null;
+    // 429 means the session is registered but its daily wake budget is spent; it stays 'new'
+    // and the next pull after 00:00 UTC will connect it.
+    if (res.ok && payload?.status) status = payload.status;
   } catch {
-    // registration already recorded; the session will connect on its own via alarm/reconnect
+    // registration already recorded; a later wake will connect it
   }
   return json({ id: name, status }, 201);
 }

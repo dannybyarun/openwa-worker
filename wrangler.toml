@@ -4,7 +4,8 @@ compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
 # One Durable Object per WhatsApp session. The DO owns the baileys socket, the
-# auth state (creds + signal keys) in its storage, and the reconnect loop.
+# auth state (creds + signal keys) in its storage, and the message cursor. In lazy
+# mode the socket is only open inside a /wake window (see README).
 [[durable_objects.bindings]]
 name = "WHATSAPP_SESSION"
 class_name = "WhatsAppSession"
@@ -19,6 +20,12 @@ class_name = "SessionRegistry"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["WhatsAppSession", "SessionRegistry"]
+
+# Optional tunables. Defaults live in src/env.ts; set them under [vars] or as secrets.
+# IDLE_TTL_MS = "60000"        # connected window per wake (5 s – 15 min)
+# DAILY_WAKE_LIMIT = "300"     # connects/session/UTC day; 0 disables the cap
+# INBOUND_WEBHOOK_URL = "https://example.com/hook"
+# INBOUND_WEBHOOK_TOKEN = "..."
 
 # Static UI. Served on `/` (anything outside /api and /health) by Cloudflare's
 # asset pipeline; the API lives on `/api/*`. Swap ./ui for your own build (e.g.

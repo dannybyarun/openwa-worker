@@ -14,10 +14,13 @@ anywhere). **Verified: linking a device via QR works from the real Cloudflare ed
 | One WhatsApp session per Durable Object (`baileys` engine only) | ✅ |
 | Link via QR code, persisted auth state (creds + signal keys) in DO storage | ✅ |
 | Send text messages | ✅ |
-| Reconnect + bounded downtime after DO evictions (2-min alarm loop) | ✅ |
+| Lazy connect windows + idle close (`/wake`, `/ack`, `/idle`) for free-tier budgets | ✅ |
+| Cursor API for pullers (`GET /messages?after=`) | ✅ |
+| Inbound webhook push (`INBOUND_WEBHOOK_URL`) | ✅ |
 | Real-time events to your UI over WebSocket (`connection.update`, `message`) | ✅ |
 | Session list / create / status / logout REST API | ✅ |
-| `whatsapp-web.js` engine, media sending, webhooks, pairing code | ❌ not in v1 |
+| Google Apps Script / Sheets drainer (works with no R2 or D1) | ✅ `apps-script/` |
+| `whatsapp-web.js` engine, media sending, pairing code | ❌ not in v1 |
 
 Everything the NestJS app uses that cannot run on a Worker (Chromium, `better-sqlite3`, `sharp`,
 `pg`, Redis/BullMQ, local disk, Docker, socket.io) is intentionally absent. This is the *connection
@@ -26,7 +29,6 @@ layer only*.
 ## Quick start
 
 ```bash
-cd cloudflare-worker
 npm ci          # installs baileys + patches its WebSocket client for Workers (postinstall)
 npm test        # patch-script specs
 npm run typecheck
@@ -55,6 +57,11 @@ GET    /api/sessions/:id/status          → { id, status, qr?, me?, lastDisconn
 GET    /api/sessions/:id/qr              → { id, status, qr? }          (raw QR payload string)
 GET    /api/sessions/:id/history         → { id, messages: [...] }      (last 200, newest first)
 POST   /api/sessions/:id/start           → { id, status }               (starts connecting / QR flow)
+POST   /api/sessions/:id/wake?wait=15000 → { id, status, wake }         (connect for one idle window)
+GET    /api/sessions/:id/messages?after=0&limit=100
+                                         → { messages, nextCursor, hasMore, oldestSeq }
+POST   /api/sessions/:id/ack             { "upto": 123, "close": true } → prune acked messages
+POST   /api/sessions/:id/idle            → { id, status }               (close the socket now)
 POST   /api/sessions/:id/send-text       { "chatId": "628...@c.us", "text": "hi" } → { id, chatId, timestamp }
 POST   /api/sessions/:id/logout          → { ok }                       (also removes from registry)
 DELETE /api/sessions/:id                 → { ok }
@@ -62,7 +69,33 @@ GET    /api/sessions/:id/events          WebSocket upgrade → live event stream
 GET    /health                           → { ok }
 ```
 
-Session names: letters, digits, `-` and `_`, max 64 chars.
+Session names: letters, digits, `-` and `_`, max 64 chars. `status` is one of `new`, `connecting`,
+`qr`, `connected`, `idle`, `closed`, `loggedOut`.
+
+### Lazy connect windows
+
+The worker does **not** keep the socket open. Every connect attempt is counted per session per UTC
+day (`DAILY_WAKE_LIMIT`, default 300; 429 after that):
+
+```
+POST /wake  → opens a window (IDLE_TTL_MS, default 60 s) and optionally waits for the socket
+POST /send-text → also opens/extends a window (and counts if it had to connect)
+GET  /messages?after=<seq> → unacked messages, oldest first, each with a monotonic `seq`
+POST /ack {upto} → delete rows you have stored; add "close": true to idle immediately
+POST /idle → close now (this is what the Apps Script drainer calls in its finally block)
+```
+
+`messages` is the puller API: `nextCursor` is safe to persist, never moves backwards, and
+`oldestSeq` lets a client detect that it fell further behind than the 200-message cap. `start`
+uses a 5× longer window when the session is not paired yet, so the QR can be scanned.
+
+### Apps Script + Google Sheets (no R2 / D1)
+
+[`apps-script/`](./apps-script/) contains a ready `Code.gs` that wakes each session on a time
+trigger, drains `GET /messages`, appends to an `Inbox` sheet, acks, sends pending `Outbox` rows, and
+closes with `/idle`. That keeps free-tier Durable Object duration in the hundreds of GB-s/day
+instead of tens of thousands. See [`apps-script/README.md`](./apps-script/README.md) for the
+cadence-vs-quota math.
 
 ### Real-time events (for your static UI)
 
@@ -89,7 +122,7 @@ Worker (src/index.ts)                 ── REST + WS upgrade routing, API_TOKE
   └─ WhatsAppSession (DO, per session)── owns the baileys socket
        ├─ auth state  → DO storage    ── creds + signal keys, BufferJSON-encoded, chunked >60 KiB
        ├─ socket      → patched baileys WebSocketClient (fetch()-upgrade, see below)
-       ├─ reconnect   → backoff + 2-min alarm (DOs get evicted; alarms wake + reconnect)
+       ├─ lifecycle   → /wake opens a window, /idle closes it; no recurring alarm
        └─ events      → hibernation WebSockets to UI clients
 ```
 
@@ -141,10 +174,11 @@ The worker serves a small single-page UI from `./ui` (Cloudflare's static-assets
 — session management (auto-refreshing every 5 s), live QR rendering, a real-time message stream
 over the events WebSocket, chat history (the last 200 messages per session, persisted in DO
 storage), a per-chat filter, and sending text. Open your deployed worker URL and you're on it.
+The **Wake** button opens a connected window; the session returns to `idle` when it closes.
 
-Messages are written to the session DO's storage as they arrive (`history` key, capped at 200),
-so reloading the page or reconnecting the socket restores the log; history is per-session and
-shared across UI clients.
+Messages are written to the session DO's storage as they arrive (`history` key, capped at 200 and
+pruned by `POST /ack`), so reloading the page or reconnecting the socket restores the log; history
+is per-session and shared across UI clients.
 
 The `ui/` folder is fully portable: host it anywhere (GitHub Pages, an S3 bucket, `wrangler pages
 deploy ui`, ...) and point it at the worker URL in the header bar. The API answers CORS for all
@@ -159,23 +193,28 @@ Swap `./ui` for your own frontend build at any time by changing `wrangler.toml` 
 
 ## Platform caveats
 
-- **Outbound WebSockets and eviction.** An outbound WebSocket keeps a Durable Object resident for
-  at most 15 minutes, then stops preventing eviction. This DO re-arms a 2-minute alarm that wakes
-  it and reconnects, and baileys reconnects on its own while resident. WhatsApp queues pending
-  messages and delivers them after reconnect, so nothing is lost — but expect a brief gap if the DO
-  is evicted mid-session.
-- **Bundle size.** The worker uploads ~7.5 MiB (gzip ~1.5 MiB) — fine on the paid plan; check the
-  free-plan 3 MiB compressed limit before deploying there.
+- **Lazy sockets are the default.** `/wake`, `/start` and `/send-text` open a short connected window
+  (`IDLE_TTL_MS`, default 60 s); `/ack?close=1` or `/idle` closes it immediately and the session
+  goes to `idle`. There is no recurring alarm and no reconnection outside an active window. This is
+  deliberate: an always-connected Durable Object burns ~10,800 GB-s/day (128 MB × 24 h), which is
+  most of the free plan's 13,000 GB-s/day for a single session. With a 15-min poll and an immediate
+  close, four sessions use only a few hundred GB-s/day.
+- **`DAILY_WAKE_LIMIT`** (default 300 connects per session per UTC day) bounds a runaway loop. A
+  5-min poll uses 288; 429 responses mean the session waits for the 00:00 UTC reset.
+- **Latency is the poll interval.** WhatsApp queues messages while the socket is closed and delivers
+  them on the next wake, so nothing is lost if the puller is slow. The 200-message unacked cap and
+  `oldestSeq` are how a client detects that it fell too far behind.
+- **Bundle size.** The worker uploads ~7.5 MiB (gzip ~1.5 MiB) — under the free-plan 3 MiB
+  compressed limit, but check it after dependency changes.
 - **Pairing requires a phone scan**; the QR is a raw string — render it client-side with any QR
-  library.
+  library. Pressing Wake/Start on an unpaired session keeps a 5× longer window so you have time.
 - `LOG_LEVEL` (trace/debug/info/warn/error/fatal) tunes baileys' log verbosity — set it to `trace`
-  when debugging the connection.
+  when debugging the connection. `IDLE_TTL_MS` and `DAILY_WAKE_LIMIT` are optional vars/secrets.
 
 ## Next steps (natural extensions)
 
 - `POST /api/sessions/:id/pairing-code` (`sock.requestPairingCode`)
-- Media sending (upload via baileys' `uploadMedia` / R2 passthrough)
-- Webhooks instead of / in addition to the WebSocket event stream
+- Media sending (upload via baileys' `uploadMedia`; the cursor API can carry the metadata)
 - Session-scoped API keys (mirror the OpenWA model)
 
 See the root `README.md` for the full OpenWA project, and the upstream
