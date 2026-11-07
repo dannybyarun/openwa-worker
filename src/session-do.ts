@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import protobuf from 'protobufjs/minimal';
+import qrcode from './qrcode';
 import {
   Browsers,
   DisconnectReason,
@@ -78,6 +79,22 @@ function decodeBase64Document(raw: string): Uint8Array | null {
   }
 }
 
+/**
+ * Render the pairing QR as a GIF data URL in the worker, so Apps Script, the web app and
+ * Android can all display it without shipping a QR library or exposing the worker token.
+ */
+function qrImageFor(text: string): string | undefined {
+  if (!text) return undefined;
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    return qr.createDataURL(6, 4);
+  } catch {
+    return undefined;
+  }
+}
+
 function mapMessage(m: WAMessage): Record<string, unknown> {
   const content = m.message ?? {};
   const text =
@@ -148,11 +165,21 @@ export class WhatsAppSession extends DurableObject<Env> {
         return this.handleEventsUpgrade(request);
       }
       if (request.method === 'GET' && action === 'status') {
-        return json({ id: this.ctx.id.name, ...(await this.getStatus()) });
+        const status = await this.getStatus();
+        return json({
+          id: this.ctx.id.name,
+          ...status,
+          ...(status.qr ? { qrImage: qrImageFor(status.qr) } : {}),
+        });
       }
       if (request.method === 'GET' && action === 'qr') {
         const status = await this.getStatus();
-        return json({ id: this.ctx.id.name, status: status.status, qr: status.qr });
+        return json({
+          id: this.ctx.id.name,
+          status: status.status,
+          qr: status.qr,
+          ...(status.qr ? { qrImage: qrImageFor(status.qr) } : {}),
+        });
       }
       if (request.method === 'GET' && action === 'history') {
         const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
