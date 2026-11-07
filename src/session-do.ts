@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import protobuf from 'protobufjs/minimal';
 import {
   Browsers,
   DisconnectReason,
@@ -14,6 +15,14 @@ import { createWorkerLogger } from './logger';
 import { error, json } from './http';
 import { normalizeSequences, pruneAcked, selectMessages, type StoredMessage } from './messages';
 import type { Env } from './env';
+
+// protobufjs picks its Node Buffer writer when `Buffer` exists. On workerd that writer's
+// `Buffer#utf8Write` rejects long strings (media messages carry a ~650 byte directPath), so
+// documents failed with "All encryptions failed" while short text messages went through.
+// Force the pure-JS Uint8Array writer instead: same bytes, no Buffer internals.
+protobuf.Writer.create = function createWriter() {
+  return new protobuf.Writer();
+};
 
 const DEFAULT_IDLE_TTL_MS = 60_000; // connected window per wake; the /idle route closes sooner
 const PAIRING_TTL_MULTIPLIER = 5; // Start gets a longer window so the QR can be scanned

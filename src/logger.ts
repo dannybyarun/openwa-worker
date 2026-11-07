@@ -21,7 +21,18 @@ export function createWorkerLogger(label: string, level: LogLevel = 'info'): Bai
     (obj: unknown, msg?: string, ...args: unknown[]): void => {
       if (LEVEL_ORDER[lvl] < LEVEL_ORDER[level]) return;
       const message = typeof obj === 'string' ? obj : msg ?? '';
-      const extra = typeof obj === 'string' || obj === undefined ? '' : ` ${JSON.stringify(obj)}`;
+      let extra = '';
+      if (typeof obj !== 'string' && obj !== undefined) {
+        try {
+          extra = ` ${JSON.stringify(obj, (_key, value) =>
+            value instanceof Error
+              ? { name: value.name, message: value.message, code: (value as { code?: unknown }).code, stack: value.stack }
+              : value,
+          )}`;
+        } catch {
+          extra = ` ${String(obj)}`;
+        }
+      }
       // eslint-disable-next-line no-console
       console.log(`${lvl.toUpperCase()} [${label}]${message ? ` ${message}` : ''}${extra}`, ...args);
     };
