@@ -16,17 +16,26 @@ Google Sheet trigger (every N min)
 ## Setup
 
 1. Create a Google Sheet, then **Extensions → Apps Script**.
-2. Replace `Code.gs` with [`Code.gs`](./Code.gs).
-3. Edit `CONFIG` at the top:
-   - `WORKER_URL` — your deployed worker origin, no trailing slash.
-   - `API_TOKEN` — same value as `wrangler secret put API_TOKEN` (leave `''` if unset).
-   - `SESSIONS` — the session names you created in the worker.
-4. Run `setupSheets_` once (authorize when prompted). It creates the `Inbox` and `Outbox` tabs.
-5. Run `installTrigger` once. It schedules `drainAll` every `POLL_MINUTES`.
-6. Put a test message on WhatsApp; it should appear in `Inbox` within one cycle.
+2. Replace `Code.gs` with [`Code.gs`](./Code.gs) and save.
+3. Reload the sheet. A **OpenWA** menu appears; choose **Setup…**. It prompts for:
+   - **Worker URL** — your deployed worker origin, no trailing slash.
+   - **API token** — the `API_TOKEN` / UI password (blank when the worker has none).
+   - **Session(s)** — comma-separated names created in the worker.
+   - **Poll interval** — 1, 5, 10, 15 or 30 minutes (15 is the safe 4-session default).
 
-The optional **OpenWA** menu (bound-script `onOpen`) gives you *Drain now*, *Install/replace trigger*,
-and *Export XLSX*.
+   Setup stores these in **Script Properties** (`OPENWA_URL`, `OPENWA_TOKEN`, `OPENWA_SESSIONS`,
+   `OPENWA_POLL_MINUTES`), creates the `Inbox` and `Outbox` tabs, installs the trigger and runs a
+   connection check. Re-run it whenever the worker or session changes.
+4. Run **OpenWA → Test connection** to confirm the URL, token and session before walking away.
+5. Send yourself a test message; it should appear in `Inbox` within one cycle.
+
+The same keys can be set by hand in **Project Settings → Script properties**, which is useful when
+you deploy the script from `clasp` instead of the editor. Properties always beat the fallback
+`CONFIG` object at the top of the file.
+
+The **OpenWA** menu also gives you *Drain now*, *Queue a message…* (writes a pending `Outbox` row),
+*Install/replace trigger*, and *Export XLSX*. `enqueueMessage(session, chatId, body)` is callable from
+any other Apps Script in the same project.
 
 ## Sheet schema
 
@@ -53,7 +62,7 @@ Two quotas matter, and the **Apps Script one binds first** for 3–4 sessions:
 - Cloudflare Workers Free: 13,000 GB-s/day of Durable Object duration.
 
 Per session per run, lazy mode costs roughly `wake handshake + pull + ack ≈ 5–10 s`. With
-`CONFIG.POLL_MINUTES` and 4 sessions:
+`OPENWA_POLL_MINUTES` and 4 sessions:
 
 | Poll | Runs/day | Apps Script runtime (4 sessions × ~8 s) | CF duration/day |
 |---|---|---|---|

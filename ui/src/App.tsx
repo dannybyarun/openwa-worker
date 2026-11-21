@@ -12,7 +12,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { api, type Config, type Message } from './lib/api';
-import { buildChats, displayName } from './lib/format';
+import { buildChats, displayName, mergeChatIndex } from './lib/format';
 import {
   loadConfig,
   loadLastSession,
@@ -92,7 +92,11 @@ export function App() {
     setReadAt(sessionId ? loadRead(sessionId) : {});
   }, [sessionId]);
 
-  const messages = historyQuery.data?.messages ?? [];
+  const history = historyQuery.data;
+  const messages = useMemo(
+    () => mergeChatIndex(history?.messages ?? [], history?.chats),
+    [history?.messages, history?.chats],
+  );
   const groupNames = historyQuery.data?.groups ?? NO_GROUP_NAMES;
   const avatars = historyQuery.data?.avatars ?? {};
   const chatList = useMemo(() => {
@@ -400,6 +404,7 @@ export function App() {
         open={dialog === 'new-chat'}
         onOpenChange={open => setDialog(open ? 'new-chat' : null)}
         onStart={startChat}
+        accountId={status?.me?.id}
       />
 
       <UsageDialog

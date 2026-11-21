@@ -6,6 +6,7 @@
  *   OPENWA_URL=… OPENWA_TOKEN=… node run.mjs --watch 60      # long-running (dev, systemd, pm2)
  *   node run.mjs --list                                      # inspect the queue
  *   node run.mjs --retry-failed                              # requeue permanent failures
+ *   node run.mjs --export queue.json                         # move a batch (JSON, or .csv)
  *
  * Exit codes: 0 = nothing failed, 1 = at least one message failed permanently, 2 = config/DB error.
  * Failures are also rows in the table, so a cron that only looks at the exit code still alerts.
@@ -16,13 +17,18 @@
 
 import {
   DEFAULTS,
+  csvToRows,
   drainOnce,
+  exportQueue,
+  importQueue,
   listRows,
   nextAttemptAt,
   openOutbox,
+  queueToCsv,
   requeueFailed,
   stats,
 } from './outbox.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
 
 function parseArgs(argv) {
   const args = {};
@@ -53,6 +59,9 @@ function usage() {
   --watch <seconds>     keep draining instead of running once
   --list                print the newest rows and exit
   --retry-failed        move failed rows back to queued, then drain (or combine with --list)
+  --export <path>       write pending/failed rows to JSON (or .csv) and exit
+  --import <path>       queue rows from a JSON/CSV export and exit
+  --status <list>       export only these statuses, e.g. queued,failed
 `);
 }
 
@@ -83,6 +92,33 @@ async function main() {
     if (args['retry-failed']) {
       const requeued = requeueFailed(db);
       console.error(`requeued ${requeued} failed row(s)`);
+    }
+
+    // Queue export/import runs without a worker URL or token: the file is the transport.
+    if (args['import']) {
+      const source = String(args['import']);
+      const text = await readFile(source, 'utf8');
+      const payload = source.toLowerCase().endsWith('.csv')
+        ? { rows: csvToRows(text) }
+        : JSON.parse(text);
+      const result = importQueue(db, payload);
+      console.log(JSON.stringify({ ...result, stats: stats(db) }, null, 2));
+      return 0;
+    }
+
+    if (args['export']) {
+      const target = String(args['export']);
+      const statuses = String(args.status ?? '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+      const queue = exportQueue(db, statuses.length ? { statuses } : {});
+      const csv = target.toLowerCase().endsWith('.csv');
+      await writeFile(target, csv ? queueToCsv(queue) : JSON.stringify(queue, null, 2), 'utf8');
+      console.log(
+        JSON.stringify({ file: target, format: csv ? 'csv' : 'json', rows: queue.rows.length }, null, 2),
+      );
+      return 0;
     }
 
     if (args.list) {

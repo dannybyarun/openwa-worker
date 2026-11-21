@@ -46,6 +46,10 @@ the two workerd quirks the transport patch compensates for.
   the session.
 - **Group names** — WhatsApp group chats show their real subject (cached while the session is
   connected) instead of `Group · 750265`.
+- **A chat list that survives** — a durable chat index keeps the last few messages of up to 80
+  chats, so a conversation stays in the sidebar after a drainer acks the message buffer. View-once,
+  disappearing, edited and device-sent messages are unwrapped to the real content, and protocol noise
+  is never stored as an empty bubble.
 - **Free-plan monitor** — **Free plan usage** in the app (or `GET /api/usage`) totals the wake
   counters, estimates Durable Object GB-s for the day, projects it against the 13,000 GB-s free
   allowance, and warns before you get close.
@@ -78,6 +82,19 @@ the two workerd quirks the transport patch compensates for.
 - **Token auth for scripts** — `API_TOKEN` also works as a bearer token (`X-API-Key`,
   `Authorization: Bearer`, or `?token=` for the events socket) for Apps Script and other clients.
   Generated `full` tokens behave the same way and can be revoked without rotating `API_TOKEN`.
+- **Backup and restore** — **Settings → Backup** exports chats (JSON or a readable `.txt`
+  transcript), settings plus token definitions (import re-creates the tokens and shows each new value
+  once), and the session's WhatsApp credentials so a linked number can move to another deployment
+  without a new QR scan (treat that file like the phone itself). The outbox queue moves with
+  `node run.mjs --export` / `--import`.
+- **Admin overview** — **Settings → Admin** shows the worker origin, the login gate, every session
+  and its status, the free-plan estimate, and a ready-to-paste Script Properties block with a token
+  for the Google Sheets drainer.
+
+## Roadmap
+
+[`docs/roadmap.md`](docs/roadmap.md) lists what is worth adding next, filtered by the same
+constraint this project lives under — free tier, lazy sockets, no always-on Durable Object.
 
 ## Screenshots
 
@@ -221,7 +238,7 @@ npm run dev:ui                     # Vite on :5173, proxies /api and /health to 
 Checks:
 
 ```bash
-npm test          # patch, auth, cursor, settings and token specs, no network
+npm test          # patch, auth, cursor, settings, token and outbox specs, no network
 npm run typecheck  # worker + UI
 ```
 
@@ -233,6 +250,7 @@ npm run typecheck  # worker + UI
 - [Architecture](docs/architecture.md) — Durable Objects, lazy lifecycle, the baileys patch, pairing notes
 - [Troubleshooting](docs/troubleshooting.md) — 401/429s, QR problems, send failures
 - [Apps Script drainer](apps-script/README.md) — Sheets inbox/outbox, free-tier cadence math
+- [Roadmap](docs/roadmap.md) — researched next steps, tiered by effort and cost
 
 ## Limitations
 
@@ -245,6 +263,9 @@ npm run typecheck  # worker + UI
 - **Latency is your poll interval.** While a session is idle the socket is closed; WhatsApp queues
   messages and delivers them on the next wake. Nothing is lost, but a webhook-driven real-time setup
   needs an always-on session, which costs free-tier budget.
+- **Only chats with traffic since linking.** History sync is off by default, so a conversation that
+  has had no messages since you linked the device has nothing to index and will not appear until
+  someone writes in it. The durable chat index keeps the chats it has seen; it cannot invent the rest.
 - **Unofficial API.** This uses the WhatsApp Web protocol via baileys. Automation and unofficial
   clients are outside WhatsApp's terms of service; use a number you can afford to lose.
 - **Not affiliated with WhatsApp or Meta.**

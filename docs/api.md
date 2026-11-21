@@ -99,6 +99,7 @@ events stream.
 {
   "id": "support-bot",
   "messages": [ { "chatId": "…@s.whatsapp.net", "text": "hi", "seq": 12 } ],
+  "chats": { "…@s.whatsapp.net": [ { "chatId": "…", "text": "hi", "timestamp": "…" } ] },
   "groups": { "120363025246125497@g.us": "Family" },
   "avatars": { "9779800000000@s.whatsapp.net": "data:image/jpeg;base64,…" }
 }
@@ -108,6 +109,13 @@ Newest first, capped at the last 200 unacked messages. Intended for the UI; pull
 `/messages`. `groups` maps group JIDs to their WhatsApp subject, cached in the session while it was
 connected (refreshed at most every 6 h). It is empty until the session has connected at least once;
 a `chat-names` event delivers the same map when it refreshes.
+
+`chats` is the durable chat index: up to 80 chats, each with its three most recent displayable
+messages. It survives `/ack` and buffer rollover, so the chat list does not lose a conversation when
+a puller drains the message queue. The UI merges it with `messages` (rows already in the page win).
+Transport envelopes (`protocolMessage`, receipts, `messageContextInfo`) and empty unknown payloads
+are never stored, and view-once/ephemeral/edited/device-sent wrappers are unwrapped to the real
+message before mapping.
 
 `avatars` holds cached profile pictures as small JPEG data URLs (`null` when WhatsApp reports no
 photo). They are refreshed while the socket is open, at most once a day each, and a missing entry
@@ -248,8 +256,35 @@ one is retried after 6 h) and refreshed while the socket is open, so an idle ses
 
 ### `POST /api/sessions/:id/logout` · `DELETE /api/sessions/:id`
 
-Both remove the device link, wipe the session's stored credentials, and drop it from the registry.
-`{ ok: true }`.
+Both remove the device link, wipe the session's stored credentials, chat index, history, cached
+photos and group names, and drop it from the registry. `{ ok: true }`.
+
+### `GET /api/sessions/:id/auth-export` · `POST /api/sessions/:id/auth-import`
+
+Credential backup, for moving a linked WhatsApp account to another deployment without a new QR scan.
+Both require the session to be closed (send `/idle` first; a connected window returns `409`).
+
+`GET` returns the raw `auth:*` storage layout:
+
+```json
+{
+  "kind": "openwa-auth-backup",
+  "version": 1,
+  "session": "support-bot",
+  "exportedAt": "2026-01-01T00:00:00.000Z",
+  "entries": { "auth:creds": { "v": "…" }, "auth:key:session:…": { "v": "…" } }
+}
+```
+
+`POST` takes `{ "confirm": "<session name>", "entries": { … } }` — the exact session name is required,
+every key must start with `auth:`, `auth:creds` must be present, and the payload is capped at 5 MB.
+Import wipes the existing credentials first and also clears chats, photos and group names, because a
+different account must not inherit them. The session reports `closed`; `POST /wake` reconnects as
+the imported account.
+
+**This file is the device.** Anyone holding it can read and send as the linked number. Store it
+encrypted and delete it after the move. The UI exposes both calls under Settings → Backup, behind a
+typed confirmation.
 
 ## Lazy windows and the cursor
 

@@ -187,6 +187,37 @@ The rules it encodes, worth copying even if you use your own queue:
 On Workers, put the same three operations on D1/KV and trigger the drain with a Cron Trigger; the
 calls to `/api/send` do not change.
 
+### Moving or preparing a queue offline
+
+```bash
+node run.mjs --export queue.json     # queued + failed rows
+node run.mjs --export queue.csv      # same columns, editable in Sheets/Excel
+node --no-warnings run.mjs --import queue.json
+```
+
+Import is idempotent on `id` and resets rows to `queued`, so a batch prepared on one machine can be
+drained on another. `sent` rows are excluded by default (`--status` narrows further); paths in
+`file_path` are host-relative, so move the documents too.
+
+## 4.5 Google Sheets as the always-on half
+
+The Apps Script in [`apps-script/`](../apps-script/) wakes a session, drains new messages into a
+sheet, acks, sends the Outbox rows and idles again. It is configured entirely from Script Properties
+— run **OpenWA → Setup…** in the sheet once:
+
+| Property | Meaning |
+| --- | --- |
+| `OPENWA_URL` | deployed worker origin |
+| `OPENWA_TOKEN` | API token / UI password (blank if none) |
+| `OPENWA_SESSIONS` | comma-separated session names (or `OPENWA_SESSION`) |
+| `OPENWA_POLL_MINUTES` | 1, 5, 10, 15 or 30 |
+| `OPENWA_INBOX_SHEET` / `OPENWA_OUTBOX_SHEET` | tab names, default `Inbox` / `Outbox` |
+
+The menu also offers **Drain now**, **Test connection**, **Queue a message…** and **Export XLSX**.
+The Sending & widget tab and the Admin tab can mint the token and show the exact property block, so
+there is nothing to hand-edit.
+
+
 ## 5. Operational notes
 
 - **Retries:** on `5xx` or a network error, retry with backoff. The API returns the WhatsApp message

@@ -222,6 +222,24 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && action === 'avatar') {
       return cors(await stub.fetch(new Request(`${stubUrl(request)}/avatar${url.search}`, { method: 'GET' })));
     }
+    // Session credential backup: move a linked WhatsApp session between deployments.
+    // Admin-only (the general gate above), and the payload is as sensitive as the number itself.
+    if (request.method === 'GET' && action === 'auth-export') {
+      return cors(
+        await stub.fetch(new Request(`${stubUrl(request)}/auth-export`, { method: 'GET' })),
+      );
+    }
+    if (request.method === 'POST' && action === 'auth-import') {
+      return cors(
+        await stub.fetch(
+          new Request(`${stubUrl(request)}/auth-import`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(await request.json().catch(() => null)),
+          }),
+        ),
+      );
+    }
     if ((request.method === 'POST' || request.method === 'DELETE') && action === 'logout') {
       const doResult = await stub.fetch(new Request(`${stubUrl(request)}/logout`, { method: 'POST' }));
       await env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry')).fetch(

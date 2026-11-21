@@ -37,6 +37,8 @@ export interface SessionSummary {
 export interface HistoryPage {
   id: string;
   messages: Message[];
+  /** Per-chat tail of recent messages, kept after rows leave the 200-message buffer. */
+  chats?: Record<string, Message[]>;
   /** Group subjects (jid → name), cached by the session while its socket is open. */
   groups?: Record<string, string>;
   /** Cached profile pictures (jid → data URL, null when WhatsApp hides it). */
@@ -178,6 +180,15 @@ export interface TokenRecord {
   expiresAt?: string;
 }
 
+/** A linked session's credential backup, exactly as the Durable Object stores it. */
+export interface AuthBackup {
+  kind: string;
+  version: number;
+  session: string;
+  exportedAt: string;
+  entries: Record<string, unknown>;
+}
+
 export interface Config {
   /** Worker origin; empty means "the origin serving this page". */
   base: string;
@@ -290,6 +301,15 @@ export const api = {
     }),
   deleteToken: (c: Config, id: string) =>
     request<{ ok: boolean }>(c, `/api/tokens/${seg(id)}`, { method: 'DELETE' }),
+  /** Raw `auth:*` credential backup. Sensitive: whoever holds it owns the linked number. */
+  authExport: (c: Config, id: string) =>
+    request<AuthBackup>(c, `/api/sessions/${seg(id)}/auth-export`),
+  authImport: (c: Config, id: string, entries: Record<string, unknown>) =>
+    request<{ ok: boolean; id: string; restored: number }>(
+      c,
+      `/api/sessions/${seg(id)}/auth-import`,
+      { method: 'POST', body: JSON.stringify({ confirm: id, entries }) },
+    ),
   sendText: (c: Config, id: string, chatId: string, text: string) =>
     request<{ id?: string; chatId: string; timestamp?: string }>(
       c,
@@ -326,7 +346,8 @@ export const api = {
     ),
 };
 
-/** `+977 980-0000000` / `9779800000000` → `9779800000000@s.whatsapp.net`. */export function toChatId(raw: string): string {
+/** `+977 980-0000000` / `9779800000000` → `9779800000000@s.whatsapp.net`. */
+export function toChatId(raw: string): string {
   const value = raw.trim();
   if (!value) return '';
   if (value.includes('@')) return value;

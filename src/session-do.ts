@@ -51,6 +51,9 @@ const MAX_RECONNECT_DELAY_MS = 60_000;
 const FALLBACK_WA_VERSION = [2, 3000, 0] as const;
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // Apps Script relays statements as base64; keep the DO memory bounded
 const HISTORY_LIMIT = 200; // most recent unacked messages kept per session (storage key 'history')
+const CHAT_INDEX_LIMIT = 80; // chats kept after their messages roll out of the cursor buffer
+const CHAT_INDEX_TAIL = 3; // messages kept per chat so an older chat still opens with context
+const CHAT_INDEX_MAX_BYTES = 100_000; // one DO value is capped at 128 KiB
 const CHAT_NAMES_TTL_MS = 6 * 60 * 60 * 1000; // refresh group subjects at most every 6 h
 const CHAT_NAMES_TIMEOUT_MS = 15_000; // groupFetchAllParticipating can hang on a stale socket
 const AVATAR_TTL_MS = 24 * 60 * 60 * 1000; // a profile photo rarely changes; refresh daily
@@ -66,6 +69,35 @@ const MEDIA_TYPES = new Set([
   'audioMessage',
   'documentMessage',
   'stickerMessage',
+  'ptvMessage',
+]);
+/**
+ * Envelopes WhatsApp wraps around the real message: view-once, disappearing, edited, documents
+ * with a caption, and messages sent from another of the account's devices. `status@broadcast`
+ * posts also arrive as ephemeral messages.
+ */
+const MESSAGE_WRAPPERS = [
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+  'documentWithCaptionMessage',
+  'deviceSentMessage',
+  'editedMessage',
+] as const;
+/**
+ * Content keys that ride along with a message but are not something a chat can show. The old
+ * mapper took the first key blindly, so a plain text message carrying `messageContextInfo`
+ * was stored as `unknown` with no text — those are the empty bubbles in the UI.
+ */
+const NON_DISPLAYABLE_TYPES = new Set([
+  'protocolMessage',
+  'senderKeyDistributionMessage',
+  'messageContextInfo',
+  'reactionMessage',
+  'encReactionMessage',
+  'pollUpdateMessage',
+  'keepInChatMessage',
 ]);
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024; // don't pull huge videos through a 128 MB DO
 const THUMBNAIL_LIMIT_BYTES = 64 * 1024;
@@ -201,6 +233,53 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** Index rows must stay small: the chat index is one DO value rewritten on every append. */
+function indexRow(row: StoredMessage): StoredMessage {
+  const next: StoredMessage = { ...row };
+  for (const field of ['media', 'preview'] as const) {
+    const value = next[field];
+    if (!value || typeof value !== 'object') continue;
+    const copy = { ...(value as Record<string, unknown>) };
+    delete copy.thumbnail;
+    next[field] = copy;
+  }
+  return next;
+}
+
+/**
+ * Stored types that carry no readable content. Sessions created before the mapper was fixed still
+ * hold rows like these; they are filtered here so the chat index does not spend its 128 KiB budget
+ * on transport noise, and the index self-heals on the next read.
+ */
+const NON_DISPLAYABLE_STORED = new Set([
+  'unknown',
+  'protocolMessage',
+  'senderKeyDistributionMessage',
+  'messageContextInfo',
+  'messageHistoryNotice',
+  'reactionMessage',
+  'encReactionMessage',
+  'pollUpdateMessage',
+  'keepInChatMessage',
+]);
+
+function isDisplayableRow(row: StoredMessage): boolean {
+  if (row.media || row.preview) return true;
+  if (typeof row.text === 'string' && row.text.trim()) return true;
+  const type = typeof row.type === 'string' ? row.type : '';
+  return type !== '' && !NON_DISPLAYABLE_STORED.has(type);
+}
+
+/** Newest timestamp in a chat's tail, used when the index is over its chat cap. */
+function latestAt(rows: StoredMessage[] | undefined): number {
+  let max = 0;
+  for (const row of rows ?? []) {
+    const at = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : Number.NaN;
+    if (Number.isFinite(at) && at > max) max = at;
+  }
+  return max;
+}
+
 /** protobuf Long fields arrive as objects, not numbers. */
 function toNumber(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
@@ -253,22 +332,90 @@ function mediaFor(
   };
 }
 
-function mapMessage(m: WAMessage): Record<string, unknown> {
-  const content = m.message ?? {};
-  const text =
-    content.conversation ??
-    content.extendedTextMessage?.text ??
-    content.imageMessage?.caption ??
-    content.videoMessage?.caption ??
-    content.documentMessage?.caption ??
-    '';
-  const type = Object.keys(content)[0] ?? 'unknown';
+/** Unwraps view-once / ephemeral / edited / device-sent envelopes down to the real message. */
+function unwrapMessage(content: proto.IMessage): Record<string, unknown> {
+  let current = content as Record<string, unknown>;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const inner = MESSAGE_WRAPPERS.map(key => current[key]).find(
+      (value): value is { message?: proto.IMessage } =>
+        Boolean(
+          value &&
+            typeof value === 'object' &&
+            (value as { message?: unknown }).message &&
+            typeof (value as { message?: unknown }).message === 'object',
+        ),
+    )?.message;
+    if (!inner) break;
+    current = inner as Record<string, unknown>;
+  }
+  return current;
+}
+
+/** The first content key a human can actually see; undefined for transport-only payloads. */
+function displayableType(content: Record<string, unknown>): string | undefined {
+  for (const key of Object.keys(content)) {
+    if (NON_DISPLAYABLE_TYPES.has(key)) continue;
+    if (content[key] === null || content[key] === undefined) continue;
+    return key;
+  }
+  return undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
+/** Reads the text a message carries, wherever WhatsApp put it. */
+function visibleText(content: Record<string, unknown>): string {
+  const nested = (key: string): Record<string, unknown> | undefined => {
+    const value = content[key];
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+  };
+  const conversation = typeof content.conversation === 'string' ? content.conversation : undefined;
+  return (
+    firstString(
+      conversation,
+      nested('extendedTextMessage')?.text,
+      nested('imageMessage')?.caption,
+      nested('videoMessage')?.caption,
+      nested('ptvMessage')?.caption,
+      nested('documentMessage')?.caption,
+      nested('audioMessage')?.caption,
+      nested('locationMessage')?.name,
+      nested('liveLocationMessage')?.caption,
+      nested('contactMessage')?.displayName,
+      nested('contactsArrayMessage')?.displayName,
+      nested('buttonsResponseMessage')?.selectedDisplayText,
+      nested('buttonsResponseMessage')?.selectedButtonId,
+      nested('listResponseMessage')?.title,
+      nested('templateButtonReplyMessage')?.selectedDisplayText,
+      nested('pollCreationMessage')?.name,
+      nested('pollCreationMessageV2')?.name,
+      nested('pollCreationMessageV3')?.name,
+    ) ?? ''
+  );
+}
+
+/**
+ * Maps one WhatsApp message to the row the UI and the pullers consume, or null when there is
+ * nothing to show (protocol envelopes, receipts) — storing those produced empty bubbles.
+ */
+function mapMessage(m: WAMessage): Record<string, unknown> | null {
+  const raw = m.message;
+  if (!raw) return null;
+  const content = unwrapMessage(raw);
+  const type = displayableType(content);
+  if (!type) return null;
+  const text = visibleText(content);
   const timestamp =
     m.messageTimestamp === undefined
       ? undefined
       : new Date(Number(m.messageTimestamp) * 1000).toISOString();
-  const preview = linkPreviewFor(content);
-  const media = mediaFor(type, content);
+  const preview = linkPreviewFor(content as proto.IMessage);
+  const media = mediaFor(type, content as proto.IMessage);
   return {
     id: m.key?.id,
     chatId: m.key?.remoteJid,
@@ -308,6 +455,11 @@ export class WhatsAppSession extends DurableObject<Env> {
   private cachedVersion?: [number, number, number];
   private statusCache?: SessionStatus;
   private historyBuf?: StoredMessage[];
+  /**
+   * Per-chat tail of recent messages, kept after rows roll out of the 200-message cursor buffer.
+   * Without it a chat vanished from the list as soon as a puller acked or the buffer turned over.
+   */
+  private chatIndexCache?: Record<string, StoredMessage[]>;
   /** Group subjects (jid → name), cached in storage so groups survive idle windows. */
   private chatNamesCache?: { at: string; names: Record<string, string> };
   private fetchingChatNames = false;
@@ -357,6 +509,8 @@ export class WhatsAppSession extends DurableObject<Env> {
         return json({
           id: this.ctx.id.name,
           messages: history.slice().reverse(),
+          // Every chat we have seen, with a short tail, so the list survives buffer rollover.
+          chats: await this.readChatIndex(),
           // Group subjects, so the UI can show "Family" instead of "Group · 750265".
           groups: await this.readChatNames(),
           // Cached profile pictures (data URLs). Missing ones are fetched per chat on demand.
@@ -494,6 +648,71 @@ export class WhatsAppSession extends DurableObject<Env> {
       if (request.method === 'POST' && action === 'logout') {
         await this.logout();
         return json({ ok: true, id: this.ctx.id.name });
+      }
+      // Credential backup: move a linked session to another deployment. The payload is the raw
+      // `auth:*` chunk layout, so it restores byte-for-byte. Anyone holding it owns the number,
+      // which is why the UI asks for the session name as confirmation and the docs shout about it.
+      if (request.method === 'GET' && action === 'auth-export') {
+        if (this.sock?.ws.isOpen || this.connecting) {
+          return error('close the session (Send /idle) before exporting its credentials', 409);
+        }
+        const entries: Record<string, unknown> = {};
+        for (const [key, value] of await this.ctx.storage.list({ prefix: 'auth:' })) {
+          entries[key] = value;
+        }
+        if (!entries['auth:creds']) {
+          return error('this session has no linked credentials to export', 404);
+        }
+        return json({
+          kind: 'openwa-auth-backup',
+          version: 1,
+          session: this.ctx.id.name,
+          exportedAt: new Date().toISOString(),
+          entries,
+        });
+      }
+      if (request.method === 'POST' && action === 'auth-import') {
+        if (this.sock?.ws.isOpen || this.connecting) {
+          return error('close the session (Send /idle) before importing credentials', 409);
+        }
+        const body = (await request.json().catch(() => null)) as {
+          confirm?: string;
+          entries?: Record<string, unknown>;
+        } | null;
+        if (!body?.entries || typeof body.entries !== 'object' || Array.isArray(body.entries)) {
+          return error('entries are required', 400);
+        }
+        if (body.confirm !== this.ctx.id.name) {
+          return error(`type the session name (${this.ctx.id.name}) to confirm`, 400);
+        }
+        const list = Object.entries(body.entries);
+        if (list.length === 0) return error('the backup is empty', 400);
+        if (list.length > 5_000) return error('the backup has too many entries', 413);
+        const put: Record<string, unknown> = {};
+        for (const [key, value] of list) {
+          if (!key.startsWith('auth:')) return error(`unexpected key: ${key}`, 400);
+          put[key] = value;
+        }
+        if (!put['auth:creds']) return error('the backup has no credentials', 400);
+        if (JSON.stringify(put).length > 5 * 1024 * 1024) {
+          return error('the backup is larger than 5 MB', 413);
+        }
+        await this.getAuth().then(auth => auth.clear());
+        await this.ctx.storage.put(put);
+        // Same privacy rule as logout: another account must not inherit chats or photos.
+        const avatarKeys = [...(await this.ctx.storage.list({ prefix: 'avatar:' })).keys()];
+        if (avatarKeys.length > 0) await this.ctx.storage.delete(avatarKeys);
+        await this.ctx.storage.delete(['chatNames', 'chatIndex', 'history']);
+        this.chatNamesCache = undefined;
+        this.avatarsCache = undefined;
+        this.chatIndexCache = {};
+        this.historyBuf = [];
+        await this.persistStatus({ status: 'closed', updatedAt: new Date().toISOString() });
+        this.broadcast({
+          type: 'connection.update',
+          data: { id: this.ctx.id.name, status: 'closed' },
+        });
+        return json({ ok: true, id: this.ctx.id.name, restored: Object.keys(put).length });
       }
       // AI assist: draft a reply for one chat from its stored history. Never sends anything.
       if (request.method === 'POST' && action === 'ai') {
@@ -715,6 +934,8 @@ export class WhatsAppSession extends DurableObject<Env> {
     for (const message of messages) {
       if (!message.key?.remoteJid) continue;
       const row = mapMessage(message);
+      // System/protocol traffic maps to null: storing it would show an empty bubble.
+      if (!row) continue;
       mapped.push(row);
       const type = String(row.type ?? '');
       if (MEDIA_TYPES.has(type) && message.key.id && message.message) {
@@ -758,9 +979,74 @@ export class WhatsAppSession extends DurableObject<Env> {
     const dropped = overflow > 0 ? buf.slice(0, overflow) : [];
     const trimmed = overflow > 0 ? buf.slice(overflow) : buf;
     this.historyBuf = trimmed;
-    await this.ctx.storage.put({ history: trimmed, msgSeq: seq });
+    const chatIndex = this.mergeChatIndex(await this.readChatIndex(), added);
+    this.chatIndexCache = chatIndex;
+    await this.ctx.storage.put({ history: trimmed, msgSeq: seq, chatIndex });
     if (dropped.length > 0) await this.deleteMedia(dropped);
     return added;
+  }
+
+  /**
+   * The durable chat list: `chatId → tail of recent displayable messages`. It is updated on every
+   * append and is never pruned by `/ack`, so a chat stays visible (and still opens with context)
+   * long after its rows leave the 200-message cursor buffer. Capped so storage cannot grow forever.
+   */
+  private async readChatIndex(): Promise<Record<string, StoredMessage[]>> {
+    if (this.chatIndexCache) return this.chatIndexCache;
+    const stored = await this.ctx.storage.get<Record<string, StoredMessage[]>>('chatIndex');
+    if (stored) {
+      const { index, changed } = this.sanitizeChatIndex(stored);
+      this.chatIndexCache = index;
+      // Older builds indexed protocol noise; rewrite once so the index stops carrying it.
+      if (changed) await this.ctx.storage.put('chatIndex', index);
+      return index;
+    }
+    // One-time seed for sessions created before the index existed: build it from the buffer.
+    const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
+    const seeded = this.mergeChatIndex({}, history);
+    this.chatIndexCache = seeded;
+    await this.ctx.storage.put('chatIndex', seeded);
+    return seeded;
+  }
+
+  private sanitizeChatIndex(index: Record<string, StoredMessage[]>): {
+    index: Record<string, StoredMessage[]>;
+    changed: boolean;
+  } {
+    const next: Record<string, StoredMessage[]> = {};
+    let changed = false;
+    for (const [chatId, rows] of Object.entries(index)) {
+      const kept = rows.filter(isDisplayableRow);
+      if (kept.length !== rows.length) changed = true;
+      if (kept.length > 0) next[chatId] = kept;
+      else changed = true;
+    }
+    return { index: next, changed };
+  }
+
+  private mergeChatIndex(
+    index: Record<string, StoredMessage[]>,
+    added: StoredMessage[],
+  ): Record<string, StoredMessage[]> {
+    const next: Record<string, StoredMessage[]> = { ...index };
+    for (const row of added) {
+      const chatId = typeof row.chatId === 'string' ? row.chatId : '';
+      if (!chatId || !isDisplayableRow(row)) continue;
+      next[chatId] = [...(next[chatId] ?? []), indexRow(row)].slice(-CHAT_INDEX_TAIL);
+    }
+    let ids = Object.keys(next);
+    if (ids.length > CHAT_INDEX_LIMIT) {
+      ids.sort((a, b) => latestAt(next[a]) - latestAt(next[b]));
+      for (const id of ids.slice(0, ids.length - CHAT_INDEX_LIMIT)) delete next[id];
+    }
+    // The index is a single storage value (128 KiB cap); drop the oldest chats until it fits.
+    ids = Object.keys(next);
+    while (ids.length > 1 && JSON.stringify(next).length > CHAT_INDEX_MAX_BYTES) {
+      ids.sort((a, b) => latestAt(next[a]) - latestAt(next[b]));
+      const oldest = ids.shift();
+      if (oldest) delete next[oldest];
+    }
+    return next;
   }
 
   /** Keyset pull: messages with seq > after, oldest first. `nextCursor` never goes backwards. */
@@ -1195,8 +1481,11 @@ export class WhatsAppSession extends DurableObject<Env> {
     try {
       const sent = await sock.sendMessage(chatId, { text: draft.draft });
       if (sent) {
-        const [row] = await this.appendHistory([mapMessage(sent)]);
-        if (row) this.broadcast({ type: 'message', data: row });
+        const row = mapMessage(sent);
+        if (row) {
+          const [stored] = await this.appendHistory([row]);
+          if (stored) this.broadcast({ type: 'message', data: stored });
+        }
       }
     } catch {
       // A failed auto-reply must never surface as a request error; the owner still sees the message.
@@ -1420,9 +1709,14 @@ export class WhatsAppSession extends DurableObject<Env> {
     // A fresh pairing must not inherit the previous account's group names or photos.
     const avatarKeys = [...(await this.ctx.storage.list({ prefix: 'avatar:' })).keys()];
     if (avatarKeys.length > 0) await this.ctx.storage.delete(avatarKeys);
-    await this.ctx.storage.delete('chatNames');
+    const mediaKeys = [...(await this.ctx.storage.list({ prefix: 'media:' })).keys()];
+    if (mediaKeys.length > 0) await this.ctx.storage.delete(mediaKeys);
+    // The next account must not see this account's chats either.
+    await this.ctx.storage.delete(['chatNames', 'chatIndex', 'history']);
     this.chatNamesCache = undefined;
     this.avatarsCache = undefined;
+    this.chatIndexCache = {};
+    this.historyBuf = [];
     this.statusCache = { status: 'loggedOut', updatedAt: new Date().toISOString() };
     await this.ctx.storage.put('status', this.statusCache);
     this.broadcast({ type: 'connection.update', data: { id: this.ctx.id.name, status: 'loggedOut' } });

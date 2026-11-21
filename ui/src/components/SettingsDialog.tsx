@@ -3,11 +3,13 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {
   CheckCircle2,
   Copy,
+  HardDriveDownload,
   Loader2,
   LogOut,
   Moon,
   Plug,
   Plus,
+  ShieldCheck,
   Sparkles,
   Sun,
   Trash2,
@@ -24,8 +26,10 @@ import {
   type TokenRecord,
 } from '../lib/api';
 import { useToast } from './Toaster';
+import { BackupTab } from './BackupTab';
+import { AdminTab } from './AdminTab';
 
-type Tab = 'connection' | 'automation' | 'embed';
+type Tab = 'connection' | 'automation' | 'embed' | 'backup' | 'admin';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -127,12 +131,12 @@ export function SettingsDialog({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content w-[min(94vw,560px)] p-5" aria-describedby={undefined}>
+        <Dialog.Content className="dialog-content w-[min(94vw,640px)] p-5" aria-describedby={undefined}>
           <div className="flex items-start justify-between gap-4">
             <div>
               <Dialog.Title className="text-[17px] font-semibold text-ink">Settings</Dialog.Title>
               <p className="mt-1 text-[12.5px] leading-5 text-muted">
-                Connection, automation and the website widget for this worker.
+                Connection, automation, sending, backups and the admin overview for this worker.
               </p>
             </div>
             <Dialog.Close asChild>
@@ -150,8 +154,10 @@ export function SettingsDialog({
             {(
               [
                 ['connection', 'Connection', Plug],
-                ['automation', 'AI & auto-reply', Sparkles],
-                ['embed', 'Sending & widget', Copy],
+                ['automation', 'AI', Sparkles],
+                ['embed', 'Sending', Copy],
+                ['backup', 'Backup', HardDriveDownload],
+                ['admin', 'Admin', ShieldCheck],
               ] as const
             ).map(([key, label, Icon]) => (
               <button
@@ -160,7 +166,7 @@ export function SettingsDialog({
                 role="tab"
                 aria-selected={tab === key}
                 onClick={() => setTab(key)}
-                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12.5px] font-medium transition ${
+                className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-1.5 text-[12px] font-medium transition ${
                   tab === key ? 'bg-panel text-ink shadow-sm' : 'text-muted hover:text-ink'
                 }`}
               >
@@ -248,6 +254,12 @@ export function SettingsDialog({
               active={open && tab === 'embed'}
             />
           )}
+
+          {tab === 'backup' && (
+            <BackupTab config={config} sessionId={sessionId ?? null} status={status} />
+          )}
+
+          {tab === 'admin' && <AdminTab config={config} sessionId={sessionId ?? null} />}
 
           <div className="mt-5 flex items-center gap-2">
             {onSignOut && (

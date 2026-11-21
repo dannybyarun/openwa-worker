@@ -8,7 +8,7 @@ send the same invoice twice. That is an **outbox**: write the intent to a row, l
 examples/outbox-cron/
   outbox.mjs    schema, enqueue/claim/retry helpers, drainOnce()  ← import this from your app
   enqueue.mjs   CLI: add one message (idempotent with --id)
-  run.mjs       CLI: drain once, --watch, --list, --retry-failed
+  run.mjs       CLI: drain once, --watch, --list, --retry-failed, --export/--import
   demo.mjs      end-to-end proof against an in-process mock gateway (no credentials)
 ```
 
@@ -48,6 +48,19 @@ Inspect and repair:
 node run.mjs --list            # newest 25 rows + counters
 node run.mjs --retry-failed    # move failed rows back to queued, then drain
 ```
+
+### Moving a batch between hosts
+
+```bash
+node run.mjs --export queue.json         # queued/sending/failed rows
+node run.mjs --export queue.csv          # same rows, editable in Sheets
+node run.mjs --export queue.json --status failed
+node --no-warnings run.mjs --import queue.json
+```
+
+Export leaves `sent` rows out by default (they are history, not work); `--status` narrows it
+further. Import is idempotent on `id` and resets each row to `queued` with a fresh attempt count —
+"run this batch on the other machine". `file_path` is host-relative, so copy the files too.
 
 Exit codes: `0` nothing failed, `1` at least one permanent failure, `2` config/DB problem. A cron
 that alerts on non-zero gets both.

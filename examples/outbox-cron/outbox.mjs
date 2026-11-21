@@ -176,6 +176,139 @@ export function listRows(db, limit = 20) {
     .map(row => ({ ...row }));
 }
 
+/* ---------- export / import ---------- */
+
+/** Columns that travel between hosts; runtime fields (attempts, message_id) are rebuilt. */
+const QUEUE_COLUMNS = [
+  'id',
+  'chat_id',
+  'text',
+  'file_path',
+  'file_name',
+  'mimetype',
+  'caption',
+  'status',
+];
+
+/**
+ * Serializes the queue so a batch can be prepared offline (or moved between machines).
+ * Import resets the rows to `queued`, so exporting `sent` history and re-importing it would
+ * send again — that is why the default export is the pending work.
+ */
+export function exportQueue(db, { statuses = ['queued', 'sending', 'failed'] } = {}) {
+  const placeholders = statuses.map(() => '?').join(', ');
+  const rows = db
+    .prepare(`SELECT * FROM outbox WHERE status IN (${placeholders}) ORDER BY created_at`)
+    .all(...statuses);
+  return {
+    kind: 'openwa-outbox-export',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    rows: rows.map(row => ({ ...row })),
+  };
+}
+
+/** Adds rows from an export file. Existing ids are kept (idempotent), new ids are queued now. */
+export function importQueue(db, payload) {
+  const rows = Array.isArray(payload) ? payload : payload?.rows;
+  if (!Array.isArray(rows)) throw new Error('expected a JSON export with a rows array');
+  const insert = db.prepare(
+    `INSERT INTO outbox
+       (id, chat_id, text, file_path, file_name, mimetype, caption, status, attempts,
+        next_attempt_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  );
+  const now = Date.now();
+  let inserted = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const chatId = String(row.chat_id ?? row.chatId ?? '').trim();
+    const text = typeof row.text === 'string' && row.text ? row.text : null;
+    const filePath = typeof row.file_path === 'string' && row.file_path ? row.file_path : null;
+    if (!chatId || (!text && !filePath)) {
+      skipped += 1;
+      continue;
+    }
+    const id = String(row.id || randomUUID());
+    const fileName = filePath
+      ? String(row.file_name ?? filePath.split(/[\\/]/).pop() ?? 'document')
+      : null;
+    const mimetype = filePath
+      ? String(row.mimetype ?? MIME_BY_EXT[extname(fileName).toLowerCase()] ?? 'application/octet-stream')
+      : null;
+    const caption = typeof row.caption === 'string' && row.caption.trim() ? row.caption.trim() : null;
+    const info = insert.run(id, chatId, text, filePath, fileName, mimetype, caption, now, now, now);
+    if (info.changes === 1) inserted += 1;
+    else skipped += 1;
+  }
+  return { inserted, skipped };
+}
+
+/** One CSV cell with the quoting Sheets/Excel expect. */
+function csvCell(value) {
+  const text = value === null || value === undefined ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** CSV for spreadsheet editing: one row per queued message. */
+export function queueToCsv(queue) {
+  const lines = [QUEUE_COLUMNS.join(',')];
+  for (const row of queue.rows) {
+    lines.push(QUEUE_COLUMNS.map(key => csvCell(row[key])).join(','));
+  }
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+/** RFC 4180 reader: handles quoted cells, embedded commas, newlines and doubled quotes. */
+export function csvToRows(text) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  const source = String(text).replace(/^\uFEFF/, '');
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    if (quoted) {
+      if (char === '"') {
+        if (source[i + 1] === '"') {
+          cell += '"';
+          i += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+    if (char === '"') quoted = true;
+    else if (char === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (char === '\n' || char === '\r') {
+      if (char === '\r' && source[i + 1] === '\n') i += 1;
+      row.push(cell);
+      if (row.some(value => value !== '')) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  if (row.some(value => value !== '')) rows.push(row);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map(header => header.trim());
+  return rows.slice(1).map(values => {
+    const out = {};
+    headers.forEach((header, index) => {
+      out[header] = values[index] ?? '';
+    });
+    return out;
+  });
+}
+
 /** Next 00:00 UTC plus a little jitter: both the token quota and the wake budget reset then. */
 export function nextUtcMidnight(now = Date.now()) {
   const date = new Date(now);

@@ -34,11 +34,77 @@ export function initials(name: string): string {
 export function displayName(chatId: string, pushName?: string): string {
   const trimmed = pushName?.trim();
   if (trimmed) return trimmed;
-  if (chatId.endsWith('@g.us')) {
-    const digits = chatId.split('@')[0] ?? '';
-    return `Group · ${digits.slice(-6)}`;
+  const [user = '', server = ''] = chatId.split('@');
+  const tail = user.split(':')[0]?.slice(-6) ?? '';
+  if (server === 'g.us') return `Group · ${tail}`;
+  if (server === 'newsletter') return `Channel · ${tail}`;
+  if (server === 'broadcast') return 'Broadcast list';
+  if (server === 'lid') return `Contact · ${tail}`;
+  if (server === 's.whatsapp.net' || server === 'c.us') return chatIdToNumber(chatId);
+  return chatId || 'Unknown chat';
+}
+
+/**
+ * Chat rows that WhatsApp's transport layer leaves behind (protocol envelopes, receipts, an
+ * `unknown` type with no text) are not messages a person can read. Legacy sessions still hold
+ * rows like that, so the UI filters them instead of drawing an empty bubble.
+ */
+const DISPLAYABLE_KINDS = new Set([
+  'image',
+  'video',
+  'ptv',
+  'audio',
+  'document',
+  'sticker',
+  'location',
+  'liveLocation',
+  'contact',
+  'contactsArray',
+  'pollCreation',
+  'pollCreationV2',
+  'pollCreationV3',
+  'buttonsResponse',
+  'listResponse',
+  'templateButtonReply',
+  'groupInvite',
+  'album',
+  'event',
+]);
+
+export function isDisplayable(message: Message): boolean {
+  if (!message.chatId) return false;
+  if (message.media || message.preview) return true;
+  if (message.text?.trim()) return true;
+  return DISPLAYABLE_KINDS.has((message.type ?? '').replace(/Message$/, ''));
+}
+
+/**
+ * Adds the session's durable chat-index tails to the transient history page. A chat whose rows
+ * rolled out of the 200-message buffer still appears in the list and opens with its last few
+ * messages instead of disappearing. Rows already in the page win (they carry media thumbnails).
+ */
+export function mergeChatIndex(
+  messages: Message[],
+  index: Record<string, Message[]> | undefined,
+): Message[] {
+  if (!index) return messages;
+  const keyOf = (m: Message) =>
+    m.id ?? `${m.chatId}|${m.timestamp ?? ''}|${m.fromMe ? 1 : 0}|${m.text ?? ''}`;
+  const seen = new Set(messages.map(keyOf));
+  const extra: Message[] = [];
+  for (const rows of Object.values(index)) {
+    for (const row of rows) {
+      if (!isDisplayable(row)) continue;
+      const key = keyOf(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      extra.push(row);
+    }
   }
-  return chatIdToNumber(chatId);
+  if (extra.length === 0) return messages;
+  return [...messages, ...extra].sort((a, b) =>
+    (a.timestamp ?? '').localeCompare(b.timestamp ?? ''),
+  );
 }
 
 export function messagePreview(message: Message | undefined): string {
@@ -112,7 +178,7 @@ export function buildChats(
 ): ChatSummary[] {
   const byChat = new Map<string, Message[]>();
   for (const message of messages) {
-    if (!message.chatId) continue;
+    if (!isDisplayable(message)) continue;
     const list = byChat.get(message.chatId);
     if (list) list.push(message);
     else byChat.set(message.chatId, [message]);

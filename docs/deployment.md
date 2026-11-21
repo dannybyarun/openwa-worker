@@ -201,6 +201,26 @@ Secrets survive a deploy. If you change bindings (new DO class, new env var), th
 guards in `scripts/`; a failed guard is intentional protection against deploying an unpatched
 socket.
 
+## Backups and moving a session
+
+Settings → Backup exports four things:
+
+| What | Format | How to restore |
+| --- | --- | --- |
+| Chats | JSON + readable `.txt` | keep as an archive; import is not needed (read-only files) |
+| Settings & token definitions | JSON | Settings → Backup → Import; tokens are re-created and their new values shown once |
+| Session credentials | JSON (`auth:*`, 5 MB cap) | Settings → Backup → Import with the session name typed to confirm |
+| Outbox queue | JSON/CSV | `node run.mjs --import queue.json` in `examples/outbox-cron` |
+
+Two limits are deliberate: AI API keys are write-only and never leave the worker, so a settings
+restore asks for the key again; token *values* are stored as hashes, so a restore mints equivalent
+tokens instead of recovering the old strings.
+
+The credential file is the device link — anyone who holds it can read and send as that number. Send
+the session to idle first (the worker refuses to export while the socket is open), store the file
+encrypted, and delete it after the move. Importing wipes the previous account's chats, photos and
+group names.
+
 ## Hosting the UI separately
 
 `npm run build` emits a fully static `ui/dist`. The normal setup is to let the worker serve it (the
