@@ -122,6 +122,8 @@ there is no `/wake` call first; a burst of invoices shares one connected window.
   delivery-receipt caveats.
 - [`examples/invoice-send/`](examples/invoice-send/) — runnable CLI and a tiny server + form that
   builds a PDF and sends it.
+- [`examples/outbox-cron/`](examples/outbox-cron/) — a durable outbox a cron drains: idempotent
+  enqueue, retries with backoff, daily-quota handling, `--list` and `--retry-failed`.
 
 ## Embed on your site
 

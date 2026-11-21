@@ -153,7 +153,41 @@ Two options, pick one:
 Useful patterns: a "paid" keyword that marks an invoice paid, a support inbox, or an auto-reply
 (Settings → AI & auto-reply, which uses Workers AI or any OpenAI-compatible endpoint).
 
-## 4. Operational notes
+## 4. Automation: drain an outbox, don't loop a send
+
+If something other than a human triggers the message — a nightly invoice run, an order event, a
+payment reminder — do not fire `fetch('/api/send')` from the middle of that job. Write the message to
+an **outbox** row and let a cron drain it. You get restarts, retries, backoff and a record of what
+went out. [`examples/outbox-cron/`](../examples/outbox-cron/) is a runnable version (`node:sqlite`,
+no dependencies):
+
+```bash
+OPENWA_URL=https://wa.example.com OPENWA_TOKEN=owa_… \
+node enqueue.mjs --id invoice-INV-42 --phone 9779800000000 \
+  --text "Invoice INV-42 — Rs 2500" --file invoices/INV-42.pdf
+
+OPENWA_URL=https://wa.example.com OPENWA_TOKEN=owa_… node run.mjs   # cron calls this
+```
+
+The rules it encodes, worth copying even if you use your own queue:
+
+- **Idempotency key.** `--id invoice-INV-42` makes a repeat enqueue a no-op, so a retried webhook
+  cannot double-send. Store the returned WhatsApp `message_id` next to the invoice.
+- **States.** `queued → sending → sent`, plus `failed` for permanent errors. A lease on `sending`
+  recovers rows from a crashed process.
+- **Retry classes.** `5xx`/network → exponential backoff (30 s → 1 h, jittered, a few attempts).
+  `429` → wait for 00:00 UTC (the token quota and the wake budget both reset then) without burning an
+  attempt. `400/401/403/413` → fail immediately and alert; retrying a bad token or a non-allowlisted
+  chat never helps.
+- **Batch, don't drip.** A drain of 20 invoices shares the session's 60 s window, so it costs about
+  one wake. One send every few minutes is how you exhaust `DAILY_WAKE_LIMIT` (300 connects/day).
+- **At-least-once.** A crash between "WhatsApp accepted it" and "row marked sent" can duplicate a
+  message. Stable keys plus your own ledger make that harmless.
+
+On Workers, put the same three operations on D1/KV and trigger the drain with a Cron Trigger; the
+calls to `/api/send` do not change.
+
+## 5. Operational notes
 
 - **Retries:** on `5xx` or a network error, retry with backoff. The API returns the WhatsApp message
   id, so store it and skip invoices that already have one.
