@@ -1,0 +1,17 @@
+# Copy to .dev.vars (gitignored) for `npm run dev`.
+# An empty or missing API_TOKEN means "no auth" locally.
+
+API_TOKEN=
+
+# How long one wake keeps the socket open (5 s – 15 min).
+# IDLE_TTL_MS=60000
+
+# Connects per session per UTC day (0 disables the cap).
+# DAILY_WAKE_LIMIT=300
+
+# baileys verbosity: trace | debug | info | warn | error | fatal
+# LOG_LEVEL=info
+
+# Optional inbound message webhook.
+# INBOUND_WEBHOOK_URL=
+# INBOUND_WEBHOOK_TOKEN=
