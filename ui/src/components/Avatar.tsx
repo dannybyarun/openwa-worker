@@ -1,4 +1,4 @@
-import { Users } from 'lucide-react';
+import { User, Users } from 'lucide-react';
 import { colorFor, initials } from '../lib/format';
 
 interface AvatarProps {
@@ -11,6 +11,9 @@ interface AvatarProps {
 
 export function Avatar({ name, seed, size = 44, online = false, group = false }: AvatarProps) {
   const color = colorFor(seed || name);
+  // Unsaved contacts come through as a phone number; WhatsApp shows a person glyph
+  // there, not the digit.
+  const contactOnly = !group && !/\p{L}/u.test(name);
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <div
@@ -18,7 +21,13 @@ export function Avatar({ name, seed, size = 44, online = false, group = false }:
         style={{ background: color, fontSize: Math.max(11, size * 0.36) }}
         aria-hidden="true"
       >
-        {group ? <Users size={Math.max(14, size * 0.46)} strokeWidth={2} /> : initials(name)}
+        {group ? (
+          <Users size={Math.max(14, size * 0.46)} strokeWidth={2} />
+        ) : contactOnly ? (
+          <User size={Math.max(14, size * 0.5)} strokeWidth={2} />
+        ) : (
+          initials(name)
+        )}
       </div>
       {online && (
         <span

@@ -125,8 +125,8 @@ export function toChatId(raw: string): string {
   return digits ? `${digits}@s.whatsapp.net` : value;
 }
 
-/** Human phone number from a jid, keeping the prefix WhatsApp Web shows. */
+/** `15551234567:33@s.whatsapp.net` → `+15551234567` (drop the device suffix). */
 export function chatIdToNumber(chatId: string): string {
-  const jid = chatId.split('@')[0] ?? chatId;
+  const jid = (chatId.split('@')[0] ?? chatId).split(':')[0] ?? '';
   return jid ? `+${jid.replace(/[^\d]/g, '')}` : chatId;
 }
