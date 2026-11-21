@@ -39,6 +39,9 @@ the two workerd quirks the transport patch compensates for.
   closes again. An always-on DO would burn most of the free plan; this design doesn't.
 - **REST + WebSocket API** — session CRUD, status, QR, history, keyed message cursor, text and
   document sending, live events. CORS-enabled.
+- **MCP server** — `POST /mcp` lets Claude Desktop, Cursor or any agent framework list chats, read
+  messages and send texts. Stateless, no extra Durable Object, token-scoped: a `send` token can only
+  send. See [docs/mcp.md](docs/mcp.md).
 - **Puller cursor** — `GET /messages?after=<seq>` returns unacked messages oldest-first with a
   monotonic `seq`, so a cron job, Apps Script, or a queue consumer can drain reliably.
 - **Google Sheets drainer** — [`apps-script/`](apps-script/) turns a spreadsheet into an inbox and
@@ -251,6 +254,7 @@ npm run typecheck  # worker + UI
 - [Deployment and configuration](docs/deployment.md) — one-click, CLI, secrets, custom domains, budgets
 - [Integrations](docs/integrations.md) — send invoices/messages from your app or site, inbound replies, limits
 - [API reference](docs/api.md) — every route, token kinds, the cursor contract, WebSocket events, webhooks
+- [MCP server](docs/mcp.md) — connect Claude, Cursor or an agent, tool list, token scopes
 - [Architecture](docs/architecture.md) — Durable Objects, lazy lifecycle, the baileys patch, pairing notes
 - [Troubleshooting](docs/troubleshooting.md) — 401/429s, QR problems, send failures
 - [Apps Script drainer](apps-script/README.md) — Sheets inbox/outbox, free-tier cadence math

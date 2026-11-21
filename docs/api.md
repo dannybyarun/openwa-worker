@@ -519,3 +519,11 @@ one was set, the message goes to the token's own `chatId` only (a different `cha
 `403`), text is capped at 1000 characters, and each token gets 50 sends per UTC day (`429` after
 that). Errors are `401` invalid/expired token, `403` wrong kind/origin/chat, `429` daily limit, and
 `502` if WhatsApp refused the send.
+
+## MCP
+
+`POST /mcp` is a Model Context Protocol endpoint over stateless Streamable HTTP (JSON-RPC 2.0, no
+SSE, no session id, no extra Durable Object). It authenticates with `Authorization: Bearer`,
+`X-API-Key` or `?token=` and never with cookies: `API_TOKEN`/`full` tokens get all five tools, a
+`send` token gets `send_text` only (pinned session and chat allowlist, same 500/day budget), and
+`embed` tokens are refused. Tools, client configuration and limits: [MCP server](mcp.md).

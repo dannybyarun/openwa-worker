@@ -1,6 +1,8 @@
 import { error, json } from './http';
 import type { Env } from './env';
 import { chatAllowed, isTokenValue, originAllowed } from './tokens';
+import { handleMcpRequest, type McpBackend, type McpScope } from './mcp';
+import type { StoredMessage } from './messages';
 import {
   authRequired,
   authSecret,
@@ -49,6 +51,13 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
 
     if (url.pathname === '/health') {
       return json({ ok: true });
+    }
+
+    // MCP (Model Context Protocol): stateless Streamable HTTP, token-authenticated, no Durable
+    // Object of its own. Handled before the assets branch and before the cookie gate, because
+    // MCP clients authenticate with a bearer token, never a browser cookie.
+    if (url.pathname === '/mcp') {
+      return handleMcp(request, env);
     }
 
     // Everything outside /api and /health is the static UI (./ui, assets binding).
@@ -640,6 +649,205 @@ async function tokenSend(request: Request, env: Env): Promise<Response> {
     | null;
   if (!res.ok) return json(payload ?? { error: 'send failed' }, res.status);
   return json({ ok: true, kind: 'text', chatId, id: payload?.id });
+}
+
+// --- MCP (Model Context Protocol) -------------------------------------------------------
+// Stateless JSON-RPC over POST /mcp. `src/mcp.ts` owns the protocol and tool schemas; this
+// file only authenticates the caller and maps tools onto Durable Object routes it already has.
+
+async function handleMcp(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return mcpResponse({ error: 'MCP uses POST (Streamable HTTP, stateless)' }, 405, {
+      allow: 'POST',
+    });
+  }
+  const auth = await mcpScope(request, env);
+  if (!auth) {
+    return mcpResponse(
+      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'unauthorized' } },
+      401,
+      { 'www-authenticate': 'Bearer' },
+    );
+  }
+  const payload = await request.json().catch(() => undefined);
+  if (payload === undefined) {
+    return mcpResponse(
+      { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } },
+      400,
+    );
+  }
+  const response = await handleMcpRequest(
+    payload,
+    auth.scope,
+    mcpBackend(env, auth.scope, auth.token),
+  );
+  // Notifications get 202 and no body.
+  if (!response) return new Response(null, { status: 202 });
+  return mcpResponse(response);
+}
+
+/**
+ * MCP authentication. Unlike the browser gate this never reads cookies: a bearer token,
+ * `X-API-Key` or `?token=` is required, and its kind decides the scope. A `send` token keeps
+ * its session and chat allowlist; `embed` tokens are refused.
+ */
+async function mcpScope(
+  request: Request,
+  env: Env,
+): Promise<{ scope: McpScope; token?: string } | null> {
+  const token = mcpToken(request);
+  if (!authRequired(env) && !token) return { scope: { kind: 'full' } };
+  if (!token) return null;
+
+  if (isTokenValue(token)) {
+    const verified = await verifyManagedToken(env, token);
+    if (!verified.ok) return null;
+    const record = verified.token;
+    if (record.kind === 'full') return { scope: { kind: 'full' }, token };
+    if (record.kind === 'send' && record.session) {
+      return {
+        scope: { kind: 'send', session: record.session, chatIds: record.chatIds ?? [] },
+        token,
+      };
+    }
+    return null;
+  }
+
+  if (env.API_TOKEN && secureEquals(token, env.API_TOKEN)) {
+    return { scope: { kind: 'full' }, token };
+  }
+  return null;
+}
+
+function mcpToken(request: Request): string | undefined {
+  const header = request.headers.get('authorization') ?? '';
+  if (header.toLowerCase().startsWith('bearer ')) {
+    const value = header.slice(7).trim();
+    if (value) return value;
+  }
+  const key = request.headers.get('x-api-key')?.trim();
+  if (key) return key;
+  return new URL(request.url).searchParams.get('token')?.trim() || undefined;
+}
+
+function mcpResponse(
+  payload: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers },
+  });
+}
+
+interface SessionHistory {
+  messages?: StoredMessage[];
+  chats?: Record<string, StoredMessage[]>;
+  groups?: Record<string, string>;
+}
+
+function mcpBackend(env: Env, scope: McpScope, token?: string): McpBackend {
+  const stubFor = (session: string) =>
+    env.WHATSAPP_SESSION.get(env.WHATSAPP_SESSION.idFromName(session));
+
+  const historyFor = async (session: string): Promise<SessionHistory> => {
+    const res = await stubFor(session).fetch('https://session/history');
+    if (!res.ok) throw new Error(`history failed for session "${session}" (${res.status})`);
+    return (await res.json()) as SessionHistory;
+  };
+
+  return {
+    async listSessions() {
+      const res = await listSessions(env);
+      const data = (await res.json()) as { sessions?: unknown[] };
+      return { sessions: data.sessions ?? [] };
+    },
+
+    async sessionStatus(session) {
+      const res = await stubFor(session).fetch('https://session/status');
+      if (!res.ok) throw new Error(`status failed for session "${session}" (${res.status})`);
+      return res.json();
+    },
+
+    async listChats(session, limit) {
+      const data = await historyFor(session);
+      const names = data.groups ?? {};
+      const rows = Object.entries(data.chats ?? {}).map(([chatId, tail]) => {
+        const last: StoredMessage = tail[tail.length - 1] ?? {};
+        return {
+          chatId,
+          name: names[chatId] ?? (typeof last.pushName === 'string' ? last.pushName : null),
+          lastAt: typeof last.timestamp === 'string' ? last.timestamp : null,
+          fromMe: last.fromMe === true,
+          type: typeof last.type === 'string' ? last.type : null,
+          preview: mcpPreview(last),
+        };
+      });
+      rows.sort((a, b) => String(b.lastAt ?? '').localeCompare(String(a.lastAt ?? '')));
+      return { session, count: Math.min(rows.length, limit), chats: rows.slice(0, limit) };
+    },
+
+    async readMessages(session, chatId, limit) {
+      const data = await historyFor(session);
+      const filtered = (data.messages ?? []).filter(m => !chatId || m.chatId === chatId);
+      // A chat that has rolled out of the 200-message cursor still has its short index tail.
+      const fallback =
+        filtered.length === 0 && chatId ? (data.chats?.[chatId] ?? []).slice(-limit) : [];
+      const picked = (filtered.length > 0 ? filtered.slice(0, limit) : fallback.reverse()).map(
+        row => ({
+          id: row.id ?? null,
+          chatId: row.chatId ?? null,
+          fromMe: row.fromMe === true,
+          sender: row.sender ?? null,
+          pushName: row.pushName ?? null,
+          timestamp: row.timestamp ?? null,
+          type: row.type ?? null,
+          text: typeof row.text === 'string' ? row.text.slice(0, 1000) : null,
+          hasMedia: Boolean(row.media),
+          hasPreview: Boolean(row.preview),
+        }),
+      );
+      return { session, chatId: chatId ?? null, order: 'newest-first', messages: picked };
+    },
+
+    async sendText(session, chatId, text) {
+      if (
+        scope.kind === 'send' &&
+        (session !== scope.session || !chatAllowed(scope.chatIds, chatId))
+      ) {
+        throw new Error('this token cannot send to that chat');
+      }
+      // `send` tokens carry a 500/day budget; reserve it after validation, before sending,
+      // exactly like POST /api/send.
+      if (scope.kind === 'send' && token) {
+        const consumed = await verifyManagedToken(env, token, true);
+        if (!consumed.ok) throw new Error(consumed.message);
+      }
+      const res = await stubFor(session).fetch(
+        new Request('https://session/send-text', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chatId, text }),
+        }),
+      );
+      const payload = (await res.json().catch(() => null)) as {
+        id?: string;
+        error?: string;
+      } | null;
+      if (!res.ok) throw new Error(payload?.error || `send failed (${res.status})`);
+      return { id: payload?.id ?? null };
+    },
+  };
+}
+
+function mcpPreview(row: StoredMessage): string | null {
+  const text = typeof row.text === 'string' ? row.text.trim() : '';
+  if (text) return text.slice(0, 160);
+  const type = typeof row.type === 'string' ? row.type : 'media';
+  if (row.media) return `[${type}]`;
+  if (row.preview) return '[link]';
+  return null;
 }
 
 async function authorized(request: Request, env: Env): Promise<boolean> {
