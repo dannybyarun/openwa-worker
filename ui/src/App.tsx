@@ -189,7 +189,9 @@ export function App() {
   };
 
   const accountName = status?.me?.name || sessionId || 'OpenWA';
-
+  // A 401 means the worker answered but rejected the token; anything else is a
+  // transport problem. Telling them apart saves a lot of "is it down?" guessing.
+  const unauthorized = (sessionsQuery.error as { status?: number } | null)?.status === 401;
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-app">
       <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel-2 py-4 lg:flex">
@@ -222,7 +224,9 @@ export function App() {
             <div className="flex items-start gap-2 border-b border-line bg-danger/10 px-4 py-2.5 text-[12px] text-danger">
               <AlertTriangle size={15} className="mt-0.5 shrink-0" />
               <div className="flex-1">
-                Cannot reach the worker. Check the URL and token.
+                {unauthorized
+                  ? 'This worker requires an API token. Paste it in Settings to connect.'
+                  : 'Cannot reach the worker. Check the URL and token.'}
                 <button
                   type="button"
                   onClick={() => setDialog('settings')}
@@ -250,7 +254,13 @@ export function App() {
       <main className={`h-full min-w-0 flex-1 ${mobileChat ? 'flex' : 'hidden md:flex'}`}>
         {!sessionId ? (
           <FirstRun
-            error={sessionsQuery.isError ? (sessionsQuery.error as Error).message : ''}
+            error={
+              sessionsQuery.isError
+                ? unauthorized
+                  ? 'The worker is reachable but rejected the request: an API token is required. Open Connection settings and paste it.'
+                  : (sessionsQuery.error as Error).message
+                : ''
+            }
             loading={sessionsQuery.isLoading}
             onCreate={() => setDialog('sessions')}
             onSettings={() => setDialog('settings')}

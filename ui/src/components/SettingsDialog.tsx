@@ -44,13 +44,23 @@ export function SettingsDialog({
     try {
       const target = apiBase({ base, token });
       const res = await fetch(`${target}/health`);
-      const ok = res.ok;
-      setHealthy(ok);
-      toast.notify(ok ? 'Worker is reachable.' : `Health check returned ${res.status}.`, ok ? 'info' : 'error');
-      if (ok) await api.sessions({ base, token });
+      if (!res.ok) {
+        setHealthy(false);
+        toast.notify(`Health check returned ${res.status}.`, 'error');
+        return;
+      }
+      await api.sessions({ base, token });
+      setHealthy(true);
+      toast.notify('Worker is reachable and the token was accepted.');
     } catch (error) {
       setHealthy(false);
-      toast.notify(`Cannot reach the worker: ${(error as Error).message}`, 'error');
+      const status = (error as { status?: number }).status;
+      toast.notify(
+        status === 401
+          ? 'Worker is reachable, but it rejected the token (401). Paste the value of the API_TOKEN secret.'
+          : `Cannot reach the worker: ${(error as Error).message}`,
+        'error',
+      );
     } finally {
       setTesting(false);
     }
