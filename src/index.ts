@@ -1,5 +1,22 @@
 import { error, json } from './http';
 import type { Env } from './env';
+import {
+  authRequired,
+  authSecret,
+  clearLoginFailures,
+  clearSessionCookie,
+  clientIp,
+  createSessionToken,
+  loginBlocked,
+  loginPassword,
+  readCookie,
+  recordLoginFailure,
+  SESSION_COOKIE,
+  secureEquals,
+  sessionCookie,
+  sessionTtlSeconds,
+  verifySessionToken,
+} from './auth';
 
 // Wrangler resolves Durable Object bindings by class name, so both classes must be exported here.
 export { WhatsAppSession } from './session-do';
@@ -38,7 +55,26 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    if (!authorized(request, env.API_TOKEN)) {
+    // Browser login endpoints. These are unauthenticated by design: /api/auth is how
+    // the UI learns whether a password is needed, /api/login exchanges it for a
+    // signed session cookie, /api/logout drops that cookie.
+    if (request.method === 'POST' && url.pathname === '/api/login') {
+      return cors(await handleLogin(request, env));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/logout') {
+      return cors(handleLogout(request));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/auth') {
+      return cors(
+        json({
+          required: authRequired(env),
+          authenticated: await authorized(request, env),
+          expiresIn: authRequired(env) ? sessionTtlSeconds(env) : undefined,
+        }),
+      );
+    }
+
+    if (!(await authorized(request, env))) {
       return error('unauthorized', 401);
     }
 
@@ -133,6 +169,48 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     return cors(error('not found', 404));
 }
 
+async function handleLogin(request: Request, env: Env): Promise<Response> {
+  const secret = authSecret(env);
+  if (!secret) {
+    // Nothing configured, so every request is already allowed (local-dev posture).
+    return json({ ok: true, required: false });
+  }
+
+  const ip = clientIp(request);
+  const retryAfter = loginBlocked(ip);
+  if (retryAfter > 0) {
+    const response = error('too many attempts, try again later', 429);
+    response.headers.set('retry-after', String(retryAfter));
+    return response;
+  }
+
+  const body = (await request.json().catch(() => null)) as { password?: string } | null;
+  const password = typeof body?.password === 'string' ? body.password : '';
+  const expected = loginPassword(env) ?? '';
+
+  if (!password || !secureEquals(password, expected)) {
+    recordLoginFailure(ip);
+    return error('invalid password', 401);
+  }
+
+  clearLoginFailures(ip);
+  const ttl = sessionTtlSeconds(env);
+  const { token, expiresAt } = await createSessionToken(secret, ttl);
+  const response = json({ ok: true, required: true, expiresAt });
+  response.headers.set('set-cookie', sessionCookie(token, ttl, isSecure(request)));
+  return response;
+}
+
+function handleLogout(request: Request): Response {
+  const response = json({ ok: true });
+  response.headers.set('set-cookie', clearSessionCookie(isSecure(request)));
+  return response;
+}
+
+function isSecure(request: Request): boolean {
+  return new URL(request.url).protocol === 'https:';
+}
+
 async function listSessions(env: Env): Promise<Response> {
   const registry = env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry'));
   const listed = (await registry.fetch('https://registry/').then(r => r.json())) as { sessions: string[] };
@@ -176,23 +254,24 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   return json({ id: name, status }, 201);
 }
 
-function authorized(request: Request, token: string | undefined): boolean {
-  if (!token) return true; // API_TOKEN unset — local-dev posture
-  // Browsers cannot set headers on WebSocket upgrades, so the token is also accepted as
-  // ?token= (the static UI appends it for the events socket; REST calls use X-API-Key).
-  const fromQuery = new URL(request.url).searchParams.get('token');
-  const header = request.headers.get('x-api-key') ?? request.headers.get('authorization') ?? '';
-  const provided = header.startsWith('Bearer ') ? header.slice(7) : header;
-  return secureEquals(provided, token) || (fromQuery !== null && secureEquals(fromQuery, token));
-}
+async function authorized(request: Request, env: Env): Promise<boolean> {
+  const secret = authSecret(env);
+  if (!secret) return true; // nothing configured — local-dev posture
 
-function secureEquals(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  // Scripts and cross-origin clients: the bearer token, also accepted as ?token=
+  // because browsers cannot set headers on WebSocket upgrades.
+  if (env.API_TOKEN) {
+    const fromQuery = new URL(request.url).searchParams.get('token');
+    const header = request.headers.get('x-api-key') ?? request.headers.get('authorization') ?? '';
+    const provided = header.startsWith('Bearer ') ? header.slice(7) : header;
+    if (secureEquals(provided, env.API_TOKEN)) return true;
+    if (fromQuery !== null && secureEquals(fromQuery, env.API_TOKEN)) return true;
   }
-  return diff === 0;
+
+  // Browser: the signed cookie set by POST /api/login (also sent on same-origin
+  // WebSocket upgrades, so the events socket needs no ?token= after signing in).
+  const cookie = readCookie(request, SESSION_COOKIE);
+  return cookie ? await verifySessionToken(secret, cookie) : false;
 }
 
 function corsHeaders(): Record<string, string> {

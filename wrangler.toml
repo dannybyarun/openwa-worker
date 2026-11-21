@@ -22,6 +22,8 @@ tag = "v1"
 new_sqlite_classes = ["WhatsAppSession", "SessionRegistry"]
 
 # Optional tunables. Defaults live in src/env.ts; set them under [vars] or as secrets.
+# UI_PASSWORD = "..."          # browser login password; falls back to API_TOKEN when unset
+# SESSION_TTL_HOURS = "168"    # browser login lifetime (max 720 h)
 # IDLE_TTL_MS = "60000"        # connected window per wake (5 s – 15 min)
 # DAILY_WAKE_LIMIT = "300"     # connects/session/UTC day; 0 disables the cap
 # INBOUND_WEBHOOK_URL = "https://example.com/hook"

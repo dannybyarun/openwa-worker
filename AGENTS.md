@@ -9,9 +9,9 @@ WhatsApp gateway for Cloudflare Workers: one Durable Object per session driving 
 - `npm run dev:ui` — Vite dev server for the UI on `:5173` (proxies `/api` and `/health` to `:8787`; run `npm run dev:worker` alongside it).
 - `npm run dev:worker` — `wrangler dev` only (expects `ui/dist` to exist; `npm run build` once first).
 - `npm run build` — `vite build` → `ui/dist` (wrangler's `[build]` hook runs this on deploy too).
-- `npm test` — `node:test` specs for the patchers and cursor helpers (25 tests, no network).
+- `npm test` — `node:test` specs for the patchers, the login gate and the cursor helpers (34 tests, no network).
 - `npm run typecheck` — `tsc --noEmit` for the worker plus `tsc --noEmit -p ui` for the UI; the only static check (there is no lint/format config).
-- Single spec: `node --test scripts/patch-baileys-worker-socket.spec.js` or `node --test scripts/cursor.spec.mjs`, optionally `--test-name-pattern`.
+- Single spec: `node --test scripts/patch-baileys-worker-socket.spec.js`, `node --test scripts/auth.spec.mjs` or `node --test scripts/cursor.spec.mjs`, optionally `--test-name-pattern`.
 - `npm run deploy` — `wrangler deploy` (the `[build]` hook compiles the UI first).
 - `npm run types` — regenerate `worker-configuration.d.ts` (checked in, ~580 KB, generated — never hand-edit). It is currently stale (`wrangler types --check` fails); regenerate after any binding change.
 
@@ -23,11 +23,11 @@ WhatsApp gateway for Cloudflare Workers: one Durable Object per session driving 
 - **Lazy lifecycle is the contract:** `/wake`, `/start` and `/send-text` open a short connected window (`IDLE_TTL_MS`, default 60 s); `/idle` (or `/ack?close=1`) closes it; the session then reports `idle`. There is no recurring alarm and no reconnect outside an active window — `alarm()` only deletes a leftover alarm from older deployments. Do not reintroduce `setAlarm()` reconnect loops: an always-on DO costs ~10,800 GB-s/day, most of the free tier's 13,000.
 - `DAILY_WAKE_LIMIT` (default 300 connects/session/UTC day) guards the free tier; `/wake`, `/start` and `/send-text` return 429 past it when they would have to open a socket. `/messages?after=<seq>` is the puller cursor API (oldest-first, `nextCursor` never moves backwards, `oldestSeq` detects falling behind the 200-message cap); `/ack` prunes only after the consumer persisted the rows.
 - All persistence is DO storage: `auth:*` (chunked at 60 KB because of the 128 KiB per-value cap), `status`, `history` (unacked, capped at 200, each row carries `seq`), `msgSeq`, and the `wakes` counter.
-- `ui/` is a React 19 + Vite + Tailwind 4 SPA (TanStack Query for the API cache, Radix for dialogs, `qrcode` for pairing). Source lives in `ui/src`; `ui/dist` is build output (gitignored) and is what the `[assets]` binding serves for everything outside `/api` and `/health`. Its worker URL/token live in `localStorage` (`openwa:worker-url`, `openwa:worker-token`); `?demo` is not a thing, don't invent one.
+- `ui/` is a React 19 + Vite + Tailwind 4 SPA (TanStack Query for the API cache, Radix for dialogs, `qrcode` for pairing). Source lives in `ui/src`; `ui/dist` is build output (gitignored) and is what the `[assets]` binding serves for everything outside `/api` and `/health`. Its worker URL lives in `localStorage` (`openwa:worker-url`); the browser holds no token — sign-in is the `openwa_session` cookie. Old builds stored an API token under `openwa:worker-token`; `loadConfig()` deletes it. `?demo` is not a thing, don't invent one.
 - `apps-script/` holds the Google Sheets drainer (`Code.gs` + setup notes). Keep it in sync with the API: it calls `/wake`, `/messages`, `/ack`, `/send-text` and `/idle`.
 - `src/messages.ts` is deliberately Durable-Object-free (sequence normalization, keyset selection, ack pruning) so `scripts/cursor.spec.mjs` can import it directly; Node 24 runs the `.ts` import, no build step. Put new cursor logic there, not in `session-do.ts`.
 - New binding/env var: add to `wrangler.toml` **and** `src/env.ts`, then `npm run types`. Production secrets via `wrangler secret put NAME`; local values in `.dev.vars` (gitignored).
-- `API_TOKEN` unset means every request is allowed (local-dev posture). WebSocket clients must pass `?token=` (browsers can't set headers); REST uses `X-API-Key` or `Authorization: Bearer`.
+- `API_TOKEN` unset **and** `UI_PASSWORD` unset means every request is allowed (local-dev posture). With either set, `src/auth.ts` gates the API: the browser posts the password to `/api/login` and gets a signed HttpOnly cookie (`openwa_session`, HMAC over its expiry, TTL from `SESSION_TTL_HOURS`); scripts still send `X-API-Key`/`Authorization: Bearer`, and WebSocket upgrades accept `?token=` because browsers can't set headers. `/api/auth`, `/api/login` and `/api/logout` are the only unauthenticated API routes. Rotating the secret invalidates every cookie.
 
 ## baileys patches — the main footgun
 

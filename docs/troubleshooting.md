@@ -2,10 +2,12 @@
 
 ## The UI says it cannot reach the worker (401 or network error)
 
-- With `API_TOKEN` set, every REST call needs the token. Open **Settings** in the UI and paste it;
-  it is sent as `X-API-Key`. The events socket passes `?token=`.
+- With `UI_PASSWORD` or `API_TOKEN` set, the UI asks for a password. Sign in again from the login
+  screen; **Sign out** lives in **Settings**.
+- `401` on a REST call from a script means `X-API-Key` (or `Authorization: Bearer`) is missing or
+  wrong. The events socket takes `?token=`.
 - If you host the UI separately, check the worker URL in Settings — it must be the origin, no
-  trailing slash and no `/api`.
+  trailing slash and no `/api`. A separately hosted UI cannot use the cookie login.
 - `curl https://<worker>/health` should return `{"ok":true}`. If it does not, the worker is not
   deployed or the URL is wrong.
 
@@ -91,7 +93,8 @@ first) or run `npm run build` once before `npm run dev:worker`.
 
 ## WebSocket events do not arrive
 
-- Browsers cannot set headers on `new WebSocket(...)`; use `?token=` when `API_TOKEN` is set.
+- Browsers cannot set headers on `new WebSocket(...)`; scripts pass `?token=` when `API_TOKEN` is
+  set. The UI served by the worker sends its login cookie with the upgrade instead.
 - The upgrade must reach the Durable Object unchanged — the worker proxies `/events` raw. Don't
   put a proxy in front that strips `Upgrade`.
 - The UI reconnects with exponential backoff (1 s → 30 s). If status is `idle`, the socket in the

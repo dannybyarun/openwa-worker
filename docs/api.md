@@ -9,12 +9,30 @@ origin, and the WebSocket upgrade is proxied to the session's Durable Object unc
 
 ## Authentication
 
-If `API_TOKEN` is unset, every request is allowed. If it is set:
+Authentication is required when `UI_PASSWORD` or `API_TOKEN` is set. With neither, every request is
+allowed (the local-dev posture).
+
+**Browser UI.** Load the worker URL and sign in with `UI_PASSWORD` (or `API_TOKEN` when no separate
+password is set). The password is exchanged for a signed, expiring cookie:
+
+| Route | Body | Result |
+| --- | --- | --- |
+| `GET /api/auth` | — | `{ required, authenticated, expiresIn }` |
+| `POST /api/login` | `{ "password": "..." }` | `{ ok, expiresAt }` and `Set-Cookie: openwa_session=…` |
+| `POST /api/logout` | — | Clears the cookie |
+
+The cookie is `HttpOnly; SameSite=Lax` (plus `Secure` over HTTPS), signed with HMAC-SHA256 over its
+expiry and keyed from the same secret, and valid for `SESSION_TTL_HOURS` (default 168). It is also
+sent on the same-origin WebSocket upgrade, so the UI needs no `?token=` once signed in. Rotating the
+password/token invalidates every session. Failed logins are throttled (10 per 10 minutes per IP,
+best effort per isolate) and return `429` with `Retry-After`.
+
+**Scripts and API clients** keep using the bearer token:
 
 | Client | How to send it |
 | --- | --- |
-| REST | `X-API-Key: <token>` or `Authorization: Bearer <token>` |
-| WebSocket | `?token=<token>` (browsers cannot set headers on `new WebSocket(...)`) |
+| REST | `X-API-Key: <API_TOKEN>` or `Authorization: Bearer <API_TOKEN>` |
+| WebSocket | `?token=<API_TOKEN>` (browsers cannot set headers on `new WebSocket(...)`) |
 
 ```bash
 curl -H "X-API-Key: $TOKEN" https://example.workers.dev/api/sessions
@@ -22,7 +40,7 @@ curl -H "X-API-Key: $TOKEN" https://example.workers.dev/api/sessions
 
 Errors are `{ "error": "message" }` with a matching status code: `400` bad input, `401`
 unauthorized, `404` unknown session/route, `413` document too large, `426` WebSocket upgrade
-expected, `429` daily wake limit.
+expected, `429` daily wake limit or login throttle.
 
 ## Sessions
 
@@ -179,7 +197,8 @@ URL-safe base64 and embedded newlines are accepted.
 GET /api/sessions/:id/events        Upgrade: websocket
 ```
 
-With auth: `wss://host/api/sessions/:id/events?token=<API_TOKEN>`.
+Scripts authenticate with `wss://host/api/sessions/:id/events?token=<API_TOKEN>`. A browser on the
+worker's own origin does not need it: the login cookie goes out with the upgrade.
 
 Frames are JSON objects with a `type` and `data`:
 

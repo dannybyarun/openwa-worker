@@ -30,6 +30,13 @@ You will be asked for `API_TOKEN` because it is declared under `cloudflare.bindi
 npx wrangler secret put API_TOKEN --name openwa-worker
 ```
 
+That token is also the browser login password. To use a different password for the UI (keeping the
+token for scripts), add a second secret:
+
+```bash
+npx wrangler secret put UI_PASSWORD --name openwa-worker
+```
+
 ## Deploy with Wrangler
 
 ```bash
@@ -38,7 +45,8 @@ cd openwa-worker
 npm ci
 npx wrangler login
 npm run deploy                 # vite build → ui/dist, then wrangler deploy
-npx wrangler secret put API_TOKEN
+npx wrangler secret put API_TOKEN      # scripts + fallback login password
+npx wrangler secret put UI_PASSWORD    # optional separate UI password
 ```
 
 `wrangler.toml` has a `[build]` hook, so plain `npx wrangler deploy` also builds the UI. The
@@ -55,13 +63,13 @@ Paste into an agent that has terminal access:
 Deploy OpenWA Worker from https://github.com/dannybyarun/openwa-worker to my Cloudflare account.
 
 1. Read README.md, docs/deployment.md and wrangler.toml first.
-2. Ask me for a strong API token using a secret input. Never print it, commit it, or pass it as a
+2. Ask me for a strong password using a secret input. Never print it, commit it, or pass it as a
    command-line argument.
 3. Run `npm ci` exactly as written. Its postinstall patches @whiskeysockets/baileys for workerd; do
    not skip scripts, upgrade baileys, or patch around a guard failure.
 4. Run `npm run deploy`.
-5. Set the token with `npx wrangler secret put API_TOKEN`.
-6. Give me the workers.dev URL. Tell me to create a session and scan the QR from WhatsApp →
+5. Set the password with `npx wrangler secret put UI_PASSWORD`. It gates the UI and the API.
+6. Give me the workers.dev URL. Tell me to sign in, create a session and scan the QR from WhatsApp →
    Linked devices. Do not attempt to pair WhatsApp yourself.
 ```
 
@@ -72,7 +80,9 @@ Set production values with `wrangler secret put NAME`; put local values in `.dev
 
 | Name | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `API_TOKEN` | recommended | unset = open | Bearer token for REST (`X-API-Key`, `Authorization: Bearer`) and the events socket (`?token=`). |
+| `UI_PASSWORD` | recommended | falls back to `API_TOKEN` | Browser login password. Rotating it signs every browser out. |
+| `SESSION_TTL_HOURS` | no | `168` | Browser login lifetime in hours (max 720). |
+| `API_TOKEN` | recommended | unset = open | Bearer token for REST (`X-API-Key`, `Authorization: Bearer`), the events socket (`?token=`), and the login password when `UI_PASSWORD` is unset. |
 | `IDLE_TTL_MS` | no | `60000` | How long a wake keeps the socket open (clamped 5 s – 15 min). |
 | `DAILY_WAKE_LIMIT` | no | `300` | Connects per session per UTC day; `0` disables the cap. |
 | `INBOUND_WEBHOOK_URL` | no | unset | POST inbound messages here as JSON. |
@@ -94,13 +104,16 @@ Changing bindings or vars in `wrangler.toml` means updating `src/env.ts` too, th
 
 3. Redeploy with `npm run deploy`.
 
-WebSockets work on custom domains and workers.dev alike. If you host the UI elsewhere, point it at
-the worker URL in **Settings** inside the UI.
+WebSockets work on custom domains and workers.dev alike. Keep the UI on the worker's own origin —
+the login cookie is same-origin, so a UI hosted elsewhere cannot sign in (see
+[Hosting the UI separately](#hosting-the-ui-separately)).
 
 ## First run
 
-1. Open the worker URL. If it is deployed fresh, the page shows **Create a session**.
-2. Create a session (letters, digits, `-`, `_`; max 64 chars). The name is the Durable Object id.
+1. Open the worker URL. If a password or token is set, the page shows **Sign in**; with neither it
+   shows **Create a session**.
+2. Sign in with `UI_PASSWORD` (or `API_TOKEN`), then create a session (letters, digits, `-`, `_`; max
+   64 chars). The name is the Durable Object id.
 3. Press **Show QR code**. The worker opens a pairing window and the UI renders the QR payload.
 4. On your phone: **WhatsApp → Settings/Menu → Linked devices → Link a device** and scan.
 5. The status turns `connected`, then `idle` after the window closes. Messages are queued by
@@ -145,6 +158,9 @@ socket.
 
 ## Hosting the UI separately
 
-`npm run build` emits a fully static `ui/dist`. Host it on Pages, S3, or anywhere, and set the
-worker origin in the UI's Settings dialog (stored in `localStorage`). The API answers CORS for all
-origins, so cross-origin REST and WebSocket connections work.
+`npm run build` emits a fully static `ui/dist`. The normal setup is to let the worker serve it (the
+`[assets]` binding does that), because the browser login is a same-origin HttpOnly cookie.
+
+If you host the files elsewhere, the page loads but cannot sign in — the login cookie belongs to the
+worker's origin. Use the default (worker-served UI) for browser access, and talk to the REST API from
+your own frontend with `X-API-Key` instead. The API answers CORS for every origin.

@@ -47,8 +47,21 @@ export interface Message {
 }
 
 export interface Config {
+  /** Worker origin; empty means "the origin serving this page". */
   base: string;
+  /**
+   * Reserved for API clients. The browser UI always leaves this empty and signs
+   * in with the password cookie instead, so no secret sits in localStorage.
+   */
   token: string;
+}
+
+/** What the worker says about its login gate. */
+export interface AuthState {
+  required: boolean;
+  authenticated: boolean;
+  /** Session lifetime in seconds, when a password is configured. */
+  expiresIn?: number;
 }
 
 export class ApiError extends Error {
@@ -80,6 +93,16 @@ export async function request<T>(
 const seg = (id: string) => encodeURIComponent(id);
 
 export const api = {
+  /** Public: tells the UI whether to show a login screen. */
+  auth: (c: Config) => request<AuthState>(c, '/api/auth'),
+  /** Exchanges the worker password for a signed HttpOnly session cookie. */
+  login: (c: Config, password: string) =>
+    request<{ ok: boolean; required?: boolean; expiresAt?: number }>(c, '/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  /** Drops the browser session cookie (does not unlink WhatsApp). */
+  signOut: (c: Config) => request<{ ok: boolean }>(c, '/api/logout', { method: 'POST' }),
   sessions: (c: Config) => request<{ sessions: SessionSummary[] }>(c, '/api/sessions'),
   createSession: (c: Config, name: string) =>
     request<{ id: string; status: SessionStatusName }>(c, '/api/sessions', {

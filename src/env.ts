@@ -8,10 +8,20 @@ export interface Env {
   /** Static UI served from ./ui (assets binding). */
   ASSETS: Fetcher;
   /**
-   * Optional bearer/header token. When unset, every request is allowed (local-dev posture);
-   * when set, requests must carry it as `X-API-Key` or `Authorization: Bearer <token>`.
+   * Optional bearer/header token for scripts, Apps Script and cross-origin clients.
+   * When both this and `UI_PASSWORD` are unset, every request is allowed (local-dev
+   * posture); when set, requests must carry it as `X-API-Key` or
+   * `Authorization: Bearer <token>` (or `?token=` on WebSocket upgrades).
    */
   API_TOKEN?: string;
+  /**
+   * Password for the browser login (`POST /api/login` → signed HttpOnly cookie).
+   * Falls back to `API_TOKEN` when unset, so one secret can gate both. Rotating the
+   * value logs every browser out.
+   */
+  UI_PASSWORD?: string;
+  /** How long a login cookie stays valid, in hours. Default 168 (7 days), max 720. */
+  SESSION_TTL_HOURS?: string;
   /** Optional baileys log verbosity (trace | debug | info | warn | error | fatal). Defaults to info. */
   LOG_LEVEL?: string;
   /**

@@ -2,7 +2,7 @@
 
 ```
 Worker (src/index.ts)
-  ├─ routing + API_TOKEN auth + CORS
+  ├─ routing + login cookie / API_TOKEN auth + CORS
   ├─ SessionRegistry (one Durable Object)
   │    └─ the list of session names, because Durable Objects cannot be enumerated
   └─ WhatsAppSession (one Durable Object per session)
@@ -110,8 +110,9 @@ The QR is returned as the raw payload string. The UI renders it with `qrcode`; a
 everything outside `/api` and `/health`. Wrangler's `[build]` hook runs the build on deploy, so
 `wrangler deploy` alone is enough. The build output is gitignored.
 
-Config lives in the browser: `openwa:worker-url`, `openwa:worker-token`, `openwa:theme`,
-`openwa:last-session`, and per-chat read marks in `openwa:read`.
+Config lives in the browser: `openwa:worker-url`, `openwa:theme`, `openwa:last-session`, and
+per-chat read marks in `openwa:read`. No secret is stored there — the signed `openwa_session` cookie
+(HttpOnly) is the credential, and `loadConfig()` deletes the `openwa:worker-token` older builds wrote.
 
 ## Routing detail
 

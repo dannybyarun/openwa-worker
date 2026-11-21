@@ -41,8 +41,11 @@ the two workerd quirks the transport patch compensates for.
 - **Google Sheets drainer** — [`apps-script/`](apps-script/) turns a spreadsheet into an inbox and
   outbox with no extra infrastructure.
 - **Optional webhooks** — `INBOUND_WEBHOOK_URL` POSTs every inbound message to your backend.
-- **Token auth** — set `API_TOKEN` and every route requires it (`X-API-Key`, `Authorization:
-  Bearer`, or `?token=` for the events socket).
+- **Password login** — the UI asks for `UI_PASSWORD` (falling back to `API_TOKEN`) and keeps a
+  signed, expiring HttpOnly cookie. Nothing secret is stored in the browser, and **Sign out** drops
+  the session.
+- **Token auth for scripts** — `API_TOKEN` also works as a bearer token (`X-API-Key`,
+  `Authorization: Bearer`, or `?token=` for the events socket) for Apps Script and other clients.
 
 ## Screenshots
 
@@ -76,9 +79,9 @@ This runs inside the Workers **free plan** for personal use:
 
 1. Click **Deploy to Cloudflare** above.
 2. Set `API_TOKEN` when prompted (strongly recommended — without it the API is open to anyone with
-   the URL). You can also set it later with `wrangler secret put API_TOKEN`.
-3. Open the Worker URL. Create a session, press **Show QR code**, and scan it from
-   **WhatsApp → Linked devices → Link a device**.
+   the URL). The UI's login password is `UI_PASSWORD` if you set one later, otherwise this token.
+3. Open the Worker URL, sign in (or create a session if the API is open), press **Show QR code**, and
+   scan it from **WhatsApp → Linked devices → Link a device**.
 4. Send a test message from your phone — it appears in the chat list.
 
 ### With Wrangler
@@ -86,7 +89,8 @@ This runs inside the Workers **free plan** for personal use:
 ```bash
 npm ci            # installs baileys + applies the two Workers patches (postinstall)
 npm run deploy    # builds the UI, then wrangler deploy
-npx wrangler secret put API_TOKEN
+npx wrangler secret put API_TOKEN     # scripts and the fallback login password
+npx wrangler secret put UI_PASSWORD   # optional: a separate password for the browser UI
 ```
 
 Prerequisites: Node 20.19+ (or 22.12+), a Cloudflare account, and `npx wrangler login`.
@@ -103,18 +107,19 @@ Paste this into an agent with terminal access (Claude Code, Codex, Cursor, …):
 Deploy OpenWA Worker from https://github.com/dannybyarun/openwa-worker to my Cloudflare account.
 
 1. Read README.md, docs/deployment.md and wrangler.toml first.
-2. Ask me for a strong API token using a secret input. Never print it or put it in a command
+2. Ask me for a strong password using a secret input. Never print it or put it in a command
    argument or a committed file.
 3. Run `npm ci` (its postinstall patches baileys — do not skip or bypass it), then `npm run deploy`.
-4. Set the token with `npx wrangler secret put API_TOKEN`.
-5. Give me the workers.dev URL and tell me to create a session and scan the QR from
+4. Set the password with `npx wrangler secret put UI_PASSWORD`. That also gates the REST API; the
+   browser signs in with it.
+5. Give me the workers.dev URL and tell me to sign in, create a session and scan the QR from
    WhatsApp → Linked devices. Do not try to pair WhatsApp for me.
 ```
 
 ## Local development
 
 ```bash
-cp .dev.vars.example .dev.vars     # optional; empty API_TOKEN means "no auth"
+cp .dev.vars.example .dev.vars     # optional; empty secrets mean "no auth"
 npm ci
 npm run dev                        # builds the UI, then Miniflare on :8787
 ```
@@ -130,7 +135,7 @@ npm run dev:ui                     # Vite on :5173, proxies /api and /health to 
 Checks:
 
 ```bash
-npm test          # patch and cursor specs, no network
+npm test          # patch, auth, and cursor specs, no network
 npm run typecheck  # worker + UI
 ```
 

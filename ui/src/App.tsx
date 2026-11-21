@@ -23,9 +23,10 @@ import {
   saveTheme,
   type Theme,
 } from './lib/storage';
-import { useEvents, useHistory, useSessions, useStatus } from './hooks/useGateway';
+import { useAuth, useEvents, useHistory, useSessions, useStatus } from './hooks/useGateway';
 import { ChatList } from './components/ChatList';
 import { ChatPane } from './components/ChatPane';
+import { LoginScreen } from './components/LoginScreen';
 import { SessionsDialog } from './components/SessionsDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { NewChatDialog } from './components/NewChatDialog';
@@ -49,13 +50,18 @@ export function App() {
   const [waking, setWaking] = useState(false);
   const [sending, setSending] = useState(false);
 
-  const sessionsQuery = useSessions(config);
+  const authQuery = useAuth(config);
+  const auth = authQuery.data;
+  // Nothing talks to the WhatsApp API until the worker says we hold a session.
+  const locked = authQuery.isPending || authQuery.isError || Boolean(auth?.required && !auth.authenticated);
+
+  const sessionsQuery = useSessions(config, !locked);
   const sessions = sessionsQuery.data?.sessions ?? [];
-  const statusQuery = useStatus(config, sessionId || null);
-  const historyQuery = useHistory(config, sessionId || null);
+  const statusQuery = useStatus(config, sessionId || null, !locked);
+  const historyQuery = useHistory(config, sessionId || null, !locked);
   const status = statusQuery.data;
 
-  useEvents(config, sessionId || null);
+  useEvents(config, sessionId || null, !locked);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -189,9 +195,47 @@ export function App() {
   };
 
   const accountName = status?.me?.name || sessionId || 'OpenWA';
-  // A 401 means the worker answered but rejected the token; anything else is a
+  // A 401 means the worker answered but rejected the request; anything else is a
   // transport problem. Telling them apart saves a lot of "is it down?" guessing.
   const unauthorized = (sessionsQuery.error as { status?: number } | null)?.status === 401;
+
+  const refreshAuth = async () => {
+    queryClient.clear();
+    await authQuery.refetch();
+  };
+
+  const signOut = async () => {
+    try {
+      await api.signOut(config);
+    } catch {
+      // The cookie may already be gone; dropping local state is what matters.
+    }
+    setSessionId('');
+    setDialog(null);
+    await refreshAuth();
+  };
+
+  if (authQuery.isPending) {
+    return (
+      <div className="wallpaper flex h-dvh w-full items-center justify-center">
+        <div className="flex items-center gap-2 text-[13px] text-muted">
+          <Loader2 size={16} className="animate-spin" /> Checking your session…
+        </div>
+      </div>
+    );
+  }
+
+  if (authQuery.isError || (auth?.required && !auth.authenticated)) {
+    return (
+      <LoginScreen
+        config={config}
+        onConfig={applyConfig}
+        onSignedIn={() => void refreshAuth()}
+        unreachable={authQuery.isError ? (authQuery.error as Error).message : undefined}
+      />
+    );
+  }
+
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-app">
       <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel-2 py-4 lg:flex">
@@ -225,14 +269,14 @@ export function App() {
               <AlertTriangle size={15} className="mt-0.5 shrink-0" />
               <div className="flex-1">
                 {unauthorized
-                  ? 'This worker requires an API token. Paste it in Settings to connect.'
-                  : 'Cannot reach the worker. Check the URL and token.'}
+                  ? 'Your session expired.'
+                  : 'Cannot reach the worker. Check the URL and your connection.'}
                 <button
                   type="button"
-                  onClick={() => setDialog('settings')}
+                  onClick={() => (unauthorized ? void refreshAuth() : setDialog('settings'))}
                   className="ml-1 font-medium underline"
                 >
-                  Settings
+                  {unauthorized ? 'Sign in again' : 'Settings'}
                 </button>
               </div>
             </div>
@@ -257,7 +301,7 @@ export function App() {
             error={
               sessionsQuery.isError
                 ? unauthorized
-                  ? 'The worker is reachable but rejected the request: an API token is required. Open Connection settings and paste it.'
+                  ? 'The worker rejected the request (401). Sign out and sign in again.'
                   : (sessionsQuery.error as Error).message
                 : ''
             }
@@ -310,6 +354,7 @@ export function App() {
         theme={theme}
         onTheme={setTheme}
         status={status}
+        onSignOut={auth?.required ? () => void signOut() : undefined}
       />
 
       <NewChatDialog

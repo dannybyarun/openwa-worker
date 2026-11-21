@@ -2,43 +2,54 @@ import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Config, type Message, type SessionStatus } from '../lib/api';
 
-export function useSessions(config: Config) {
+/** Public auth state: whether this worker needs a password and whether we hold a session. */
+export function useAuth(config: Config) {
+  return useQuery({
+    queryKey: ['auth', config.base, config.token],
+    queryFn: () => api.auth(config),
+    retry: 0,
+    staleTime: 15_000,
+  });
+}
+
+export function useSessions(config: Config, enabled = true) {
   return useQuery({
     queryKey: ['sessions', config.base, config.token],
     queryFn: () => api.sessions(config),
+    enabled,
     refetchInterval: 5000,
     retry: 1,
   });
 }
 
-export function useStatus(config: Config, sessionId: string | null) {
+export function useStatus(config: Config, sessionId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['status', config.base, config.token, sessionId],
     queryFn: () => api.status(config, sessionId as string),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && enabled,
     refetchInterval: 5000,
     retry: 1,
   });
 }
 
-export function useHistory(config: Config, sessionId: string | null) {
+export function useHistory(config: Config, sessionId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['history', config.base, config.token, sessionId],
     queryFn: () => api.history(config, sessionId as string),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && enabled,
     refetchInterval: 20000,
     retry: 1,
   });
 }
 
 /** Live event stream for the selected session; writes straight into the query cache. */
-export function useEvents(config: Config, sessionId: string | null) {
+export function useEvents(config: Config, sessionId: string | null, enabled = true) {
   const queryClient = useQueryClient();
   const attempt = useRef(0);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !enabled) return;
     let socket: WebSocket | null = null;
     let closed = false;
 
@@ -114,5 +125,5 @@ export function useEvents(config: Config, sessionId: string | null) {
         /* ignore */
       }
     };
-  }, [config.base, config.token, sessionId, queryClient]);
+  }, [config.base, config.token, sessionId, enabled, queryClient]);
 }

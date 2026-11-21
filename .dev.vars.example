@@ -1,9 +1,15 @@
 # Copy to .dev.vars (gitignored) for `npm run dev`.
-# An empty or missing API_TOKEN means "no auth" locally.
+# With neither UI_PASSWORD nor API_TOKEN set, the worker has no auth (local-dev posture).
 
 API_TOKEN=
 
-# How long one wake keeps the socket open (5 s – 15 min).
+# Separate password for the browser login. When unset, API_TOKEN is the password.
+# UI_PASSWORD=
+
+# Browser login lifetime in hours (default 168, max 720).
+# SESSION_TTL_HOURS=168
+
+# How long one wake keeps the socket open (5 s - 15 min).
 # IDLE_TTL_MS=60000
 
 # Connects per session per UTC day (0 disables the cap).

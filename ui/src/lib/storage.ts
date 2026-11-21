@@ -7,15 +7,19 @@ const LS_SESSION = 'openwa:last-session';
 const LS_READ = 'openwa:read';
 
 export function loadConfig(): Config {
+  // Older builds kept an API token here so the browser could act without signing
+  // in. That was the "auto login" — the UI now uses the password cookie instead,
+  // so drop any leftover secret from this origin.
+  localStorage.removeItem(LS_TOKEN);
   return {
     base: localStorage.getItem(LS_BASE) ?? '',
-    token: localStorage.getItem(LS_TOKEN) ?? '',
+    token: '',
   };
 }
 
 export function saveConfig(config: Config): void {
   localStorage.setItem(LS_BASE, config.base.trim().replace(/\/+$/, ''));
-  localStorage.setItem(LS_TOKEN, config.token.trim());
+  localStorage.removeItem(LS_TOKEN);
 }
 
 export type Theme = 'dark' | 'light';

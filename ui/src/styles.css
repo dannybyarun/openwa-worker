@@ -165,7 +165,6 @@ body {
   z-index: 51;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
   width: min(92vw, 460px);
   max-height: 88vh;
   overflow: auto;
@@ -173,5 +172,18 @@ body {
   background: var(--c-panel);
   color: var(--c-text);
   box-shadow: 0 24px 60px rgb(0 0 0 / 0.45);
-  animation: fade-up 140ms ease-out both;
+  animation: dialog-in 140ms ease-out both;
+}
+
+/* The dialog is centred with a transform, so its animation must keep that
+   transform — the shared fade-up keyframe would snap it off-centre. */
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }

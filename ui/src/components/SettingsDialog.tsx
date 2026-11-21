@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { CheckCircle2, Eye, EyeOff, Loader2, Moon, Sun, X } from 'lucide-react';
+import { CheckCircle2, Loader2, LogOut, Moon, Sun, X } from 'lucide-react';
 import { api, apiBase, type Config, type SessionStatus } from '../lib/api';
 import { useToast } from './Toaster';
 
@@ -12,6 +12,8 @@ interface SettingsDialogProps {
   theme: 'dark' | 'light';
   onTheme: (theme: 'dark' | 'light') => void;
   status?: SessionStatus;
+  /** Present when the worker has a password set; drops the browser session cookie. */
+  onSignOut?: () => void;
 }
 
 export function SettingsDialog({
@@ -22,10 +24,9 @@ export function SettingsDialog({
   theme,
   onTheme,
   status,
+  onSignOut,
 }: SettingsDialogProps) {
   const [base, setBase] = useState(config.base);
-  const [token, setToken] = useState(config.token);
-  const [reveal, setReveal] = useState(false);
   const [testing, setTesting] = useState(false);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const toast = useToast();
@@ -33,31 +34,30 @@ export function SettingsDialog({
   useEffect(() => {
     if (open) {
       setBase(config.base);
-      setToken(config.token);
       setHealthy(null);
     }
-  }, [open, config.base, config.token]);
+  }, [open, config.base]);
 
   const test = async () => {
     setTesting(true);
     setHealthy(null);
     try {
-      const target = apiBase({ base, token });
+      const target = apiBase({ base, token: '' });
       const res = await fetch(`${target}/health`);
       if (!res.ok) {
         setHealthy(false);
         toast.notify(`Health check returned ${res.status}.`, 'error');
         return;
       }
-      await api.sessions({ base, token });
+      await api.sessions({ base, token: '' });
       setHealthy(true);
-      toast.notify('Worker is reachable and the token was accepted.');
+      toast.notify('Worker is reachable and you are signed in.');
     } catch (error) {
       setHealthy(false);
       const status = (error as { status?: number }).status;
       toast.notify(
         status === 401
-          ? 'Worker is reachable, but it rejected the token (401). Paste the value of the API_TOKEN secret.'
+          ? 'Worker is reachable, but it rejected the request (401). Sign out and sign in again.'
           : `Cannot reach the worker: ${(error as Error).message}`,
         'error',
       );
@@ -67,7 +67,7 @@ export function SettingsDialog({
   };
 
   const save = () => {
-    onSave({ base: base.trim().replace(/\/+$/, ''), token: token.trim() });
+    onSave({ base: base.trim().replace(/\/+$/, ''), token: '' });
     toast.notify('Connection settings saved.');
     onOpenChange(false);
   };
@@ -83,7 +83,8 @@ export function SettingsDialog({
             <div>
               <Dialog.Title className="text-[17px] font-semibold text-ink">Settings</Dialog.Title>
               <p className="mt-1 text-[12.5px] leading-5 text-muted">
-                Connection details stay in this browser&apos;s localStorage.
+                You are signed in with the worker password; the browser only holds a signed session
+                cookie. Scripts and other clients use <code className="rounded bg-panel-2 px-1">X-API-Key</code>.
               </p>
             </div>
             <Dialog.Close asChild>
@@ -110,34 +111,6 @@ export function SettingsDialog({
                 className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13.5px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
               />
               <p className="mt-1 text-[11.5px] text-muted">Leave empty when the UI is served by the worker itself.</p>
-            </div>
-
-            <div>
-              <label htmlFor="api-token" className="text-[12px] font-medium text-muted">
-                API token
-              </label>
-              <div className="relative mt-1.5">
-                <input
-                  id="api-token"
-                  type={reveal ? 'text' : 'password'}
-                  value={token}
-                  onChange={event => setToken(event.target.value)}
-                  placeholder="optional unless API_TOKEN is set"
-                  className="w-full rounded-lg bg-panel-2 px-3 py-2 pr-10 text-[13.5px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
-                />
-                <button
-                  type="button"
-                  onClick={() => setReveal(value => !value)}
-                  className="absolute top-1/2 right-2 -translate-y-1/2 text-muted hover:text-ink"
-                  aria-label={reveal ? 'Hide token' : 'Show token'}
-                >
-                  {reveal ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              <p className="mt-1 text-[11.5px] text-muted">
-                Sent as <code className="rounded bg-panel-2 px-1">X-API-Key</code>; the events socket passes it
-                as <code className="rounded bg-panel-2 px-1">?token=</code>.
-              </p>
             </div>
 
             <div className="flex items-center gap-2">
@@ -185,7 +158,17 @@ export function SettingsDialog({
             )}
           </div>
 
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="mt-5 flex items-center gap-2">
+            {onSignOut && (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-danger transition hover:bg-danger/10"
+              >
+                <LogOut size={15} /> Sign out
+              </button>
+            )}
+            <div className="flex-1" />
             <Dialog.Close asChild>
               <button
                 type="button"

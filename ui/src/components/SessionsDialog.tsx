@@ -201,7 +201,7 @@ export function SessionsDialog({
               }}
               className="mt-3 text-[11.5px] text-accent hover:underline"
             >
-              Worker URL or API token wrong? Open settings
+              Wrong worker URL or signed out? Open settings
             </button>
           </div>
         </Dialog.Content>
