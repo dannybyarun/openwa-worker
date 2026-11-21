@@ -2,21 +2,57 @@
   "name": "openwa-worker",
   "version": "0.1.0",
   "private": true,
-  "description": "OpenWA WhatsApp gateway for Cloudflare Workers — baileys connection layer + minimal API, UI-agnostic (bring your own static frontend).",
+  "description": "WhatsApp gateway for Cloudflare Workers — baileys in a Durable Object, a REST + WebSocket API, and a WhatsApp Web-style UI.",
+  "cloudflare": {
+    "bindings": {
+      "API_TOKEN": {
+        "description": "Bearer token for the REST API and the events WebSocket. Strongly recommended in production: leave it unset and anyone with the worker URL can read and send messages. Generate one with `openssl rand -hex 32`."
+      },
+      "IDLE_TTL_MS": {
+        "description": "Optional. How long one wake keeps the WhatsApp socket open, in milliseconds (5000–900000). Default 60000."
+      },
+      "DAILY_WAKE_LIMIT": {
+        "description": "Optional. Connects allowed per session per UTC day before the API returns 429. Default 300; 0 disables the cap."
+      },
+      "INBOUND_WEBHOOK_URL": {
+        "description": "Optional. POST inbound messages here as JSON."
+      },
+      "INBOUND_WEBHOOK_TOKEN": {
+        "description": "Optional. Bearer token sent with inbound webhook deliveries."
+      }
+    }
+  },
   "scripts": {
     "postinstall": "node scripts/patch-baileys-worker-socket.js && node scripts/patch-baileys-link-preview.js",
-    "dev": "wrangler dev",
+    "build": "vite build",
+    "dev": "npm run build && wrangler dev",
+    "dev:ui": "vite",
+    "dev:worker": "wrangler dev",
     "deploy": "wrangler deploy",
     "types": "wrangler types",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
     "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js scripts/cursor.spec.mjs"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14"
+    "@radix-ui/react-dialog": "^1.3.1",
+    "@tanstack/react-query": "^5.108.2",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.77.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260904.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "~6.0.3",
+    "vite": "^8.3.8",
     "wrangler": "^4.129.0"
   }
 }

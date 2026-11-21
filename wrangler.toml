@@ -27,9 +27,13 @@ new_sqlite_classes = ["WhatsAppSession", "SessionRegistry"]
 # INBOUND_WEBHOOK_URL = "https://example.com/hook"
 # INBOUND_WEBHOOK_TOKEN = "..."
 
+# Build the React UI into ./ui/dist before Wrangler uploads the assets.
+[build]
+command = "npm run build"
+
 # Static UI. Served on `/` (anything outside /api and /health) by Cloudflare's
-# asset pipeline; the API lives on `/api/*`. Swap ./ui for your own build (e.g.
-# a Vite build of the OpenWA dashboard) when you have one.
+# asset pipeline; the API lives on `/api/*`. `npm run build` (run automatically
+# by the [build] hook above) compiles the Vite app in ./ui.
 [assets]
-directory = "./ui"
+directory = "./ui/dist"
 binding = "ASSETS"

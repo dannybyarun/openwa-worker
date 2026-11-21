@@ -1,15 +1,18 @@
 # AGENTS.md
 
-WhatsApp gateway for Cloudflare Workers: one Durable Object per session driving `baileys`, plus a REST API, a WebSocket event stream, and a static UI. No build step — Wrangler bundles `src/index.ts` directly.
+WhatsApp gateway for Cloudflare Workers: one Durable Object per session driving `baileys`, plus a REST API, a WebSocket event stream, and a React UI. Wrangler bundles `src/index.ts` directly (no worker build step); the UI is a Vite app in `ui/` that builds to `ui/dist` and is served by the assets binding.
 
 ## Commands (repo root; this repo *is* the worker)
 
 - `npm ci` — must be run first; its `postinstall` patches `node_modules/@whiskeysockets/baileys` (required, see below).
-- `npm run dev` — local Miniflare on `http://localhost:8787`.
+- `npm run dev` — builds the UI, then local Miniflare on `http://localhost:8787`.
+- `npm run dev:ui` — Vite dev server for the UI on `:5173` (proxies `/api` and `/health` to `:8787`; run `npm run dev:worker` alongside it).
+- `npm run dev:worker` — `wrangler dev` only (expects `ui/dist` to exist; `npm run build` once first).
+- `npm run build` — `vite build` → `ui/dist` (wrangler's `[build]` hook runs this on deploy too).
 - `npm test` — `node:test` specs for the patchers and cursor helpers (25 tests, no network).
-- `npm run typecheck` — `tsc --noEmit`; the only static check (there is no lint/format config).
+- `npm run typecheck` — `tsc --noEmit` for the worker plus `tsc --noEmit -p ui` for the UI; the only static check (there is no lint/format config).
 - Single spec: `node --test scripts/patch-baileys-worker-socket.spec.js` or `node --test scripts/cursor.spec.mjs`, optionally `--test-name-pattern`.
-- `npm run deploy` — `wrangler deploy`.
+- `npm run deploy` — `wrangler deploy` (the `[build]` hook compiles the UI first).
 - `npm run types` — regenerate `worker-configuration.d.ts` (checked in, ~580 KB, generated — never hand-edit). It is currently stale (`wrangler types --check` fails); regenerate after any binding change.
 
 ## Architecture facts that are easy to get wrong
@@ -20,7 +23,7 @@ WhatsApp gateway for Cloudflare Workers: one Durable Object per session driving 
 - **Lazy lifecycle is the contract:** `/wake`, `/start` and `/send-text` open a short connected window (`IDLE_TTL_MS`, default 60 s); `/idle` (or `/ack?close=1`) closes it; the session then reports `idle`. There is no recurring alarm and no reconnect outside an active window — `alarm()` only deletes a leftover alarm from older deployments. Do not reintroduce `setAlarm()` reconnect loops: an always-on DO costs ~10,800 GB-s/day, most of the free tier's 13,000.
 - `DAILY_WAKE_LIMIT` (default 300 connects/session/UTC day) guards the free tier; `/wake`, `/start` and `/send-text` return 429 past it when they would have to open a socket. `/messages?after=<seq>` is the puller cursor API (oldest-first, `nextCursor` never moves backwards, `oldestSeq` detects falling behind the 200-message cap); `/ack` prunes only after the consumer persisted the rows.
 - All persistence is DO storage: `auth:*` (chunked at 60 KB because of the 128 KiB per-value cap), `status`, `history` (unacked, capped at 200, each row carries `seq`), `msgSeq`, and the `wakes` counter.
-- `ui/` is a single static page served by the `[assets]` binding for everything outside `/api` and `/health`. Its worker URL/token live in `localStorage` (`openwa:worker-url`, `openwa:worker-token`).
+- `ui/` is a React 19 + Vite + Tailwind 4 SPA (TanStack Query for the API cache, Radix for dialogs, `qrcode` for pairing). Source lives in `ui/src`; `ui/dist` is build output (gitignored) and is what the `[assets]` binding serves for everything outside `/api` and `/health`. Its worker URL/token live in `localStorage` (`openwa:worker-url`, `openwa:worker-token`); `?demo` is not a thing, don't invent one.
 - `apps-script/` holds the Google Sheets drainer (`Code.gs` + setup notes). Keep it in sync with the API: it calls `/wake`, `/messages`, `/ack`, `/send-text` and `/idle`.
 - `src/messages.ts` is deliberately Durable-Object-free (sequence normalization, keyset selection, ack pruning) so `scripts/cursor.spec.mjs` can import it directly; Node 24 runs the `.ts` import, no build step. Put new cursor logic there, not in `session-do.ts`.
 - New binding/env var: add to `wrangler.toml` **and** `src/env.ts`, then `npm run types`. Production secrets via `wrangler secret put NAME`; local values in `.dev.vars` (gitignored).
