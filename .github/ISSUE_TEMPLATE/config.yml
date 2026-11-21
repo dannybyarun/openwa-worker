@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/dannybyarun/openwa-worker/security/policy
+    about: Report vulnerabilities privately, never in a public issue.
+  - name: Questions and ideas
+    url: https://github.com/dannybyarun/openwa-worker/discussions
+    about: Ask for help or discuss a design before opening an issue.

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Never paste API tokens, `.dev.vars` contents, QR payloads or
+        session backup files — the backup file *is* the device link.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Deploy the worker
+        2. Create a session named ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Worker version or commit
+      description: The version id from `wrangler deploy`, or the commit you deployed.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: `wrangler tail` output or the API error body, with secrets removed.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I read the troubleshooting guide (docs/troubleshooting.md)
+          required: true
+        - label: This is not a security issue, which goes through SECURITY.md instead
+          required: true

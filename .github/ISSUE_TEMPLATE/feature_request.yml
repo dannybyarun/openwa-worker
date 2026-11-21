@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a capability or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the worker does not support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: >
+        How you imagine it working. If it touches the socket lifecycle or per-wake work, say how it
+        stays inside the lazy model and the free-tier budget.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Worker / API
+        - UI
+        - Apps Script drainer
+        - Docs
+        - Other

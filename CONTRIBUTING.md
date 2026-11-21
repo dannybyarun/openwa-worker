@@ -25,7 +25,11 @@ npm test
 npm run build
 ```
 
-All three must pass. `npm run typecheck` checks the worker and the UI.
+All three must pass. `npm run typecheck` checks the worker and the UI. CI runs the same three on
+every pull request, so you can see a failure without anyone reviewing it first.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go through
+[SECURITY.md](SECURITY.md), not a public issue or PR.
 
 ## Ground rules
 

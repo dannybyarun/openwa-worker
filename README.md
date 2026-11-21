@@ -13,6 +13,9 @@
   <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/dannybyarun/openwa-worker">
     <img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" />
   </a>
+  <a href="https://github.com/dannybyarun/openwa-worker/actions/workflows/ci.yml">
+    <img src="https://github.com/dannybyarun/openwa-worker/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  </a>
 </p>
 
 ## What this is
@@ -270,6 +273,16 @@ npm run typecheck  # worker + UI
 - **Unofficial API.** This uses the WhatsApp Web protocol via baileys. Automation and unofficial
   clients are outside WhatsApp's terms of service; use a number you can afford to lose.
 - **Not affiliated with WhatsApp or Meta.**
+
+## Contributing
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+the checks a PR must pass (`npm run typecheck`, `npm test`, `npm run build`, all enforced by CI),
+and the ground rules that keep the worker on the free tier. Security problems go through
+[SECURITY.md](SECURITY.md), and this project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Good first contributions: a new integration in `docs/integrations.md`, a troubleshooting entry,
+a UI polish PR, or one of the smaller items in the [roadmap](docs/roadmap.md).
 
 ## License
 
