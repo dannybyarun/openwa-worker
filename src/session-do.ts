@@ -56,6 +56,8 @@ const CHAT_INDEX_TAIL = 3; // messages kept per chat so an older chat still open
 const CHAT_INDEX_MAX_BYTES = 100_000; // one DO value is capped at 128 KiB
 const CHAT_NAMES_TTL_MS = 6 * 60 * 60 * 1000; // refresh group subjects at most every 6 h
 const CHAT_NAMES_TIMEOUT_MS = 15_000; // groupFetchAllParticipating can hang on a stale socket
+const CHANNEL_NAME_LIMIT = 12; // newsletters resolved per connected window (free-tier friendly)
+const CHANNEL_NAME_TIMEOUT_MS = 8_000; // one newsletterMetadata lookup
 const AVATAR_TTL_MS = 24 * 60 * 60 * 1000; // a profile photo rarely changes; refresh daily
 const AVATAR_MISS_TTL_MS = 6 * 60 * 60 * 1000; // a hidden/absent photo is retried sooner
 const AVATAR_FETCH_LIMIT = 15; // avatars refreshed per connected window (free-tier friendly)
@@ -268,6 +270,22 @@ function isDisplayableRow(row: StoredMessage): boolean {
   if (typeof row.text === 'string' && row.text.trim()) return true;
   const type = typeof row.type === 'string' ? row.type : '';
   return type !== '' && !NON_DISPLAYABLE_STORED.has(type);
+}
+
+/**
+ * The name out of a `newsletterMetadata()` result. Baileys' `.d.ts` promises `{ name: string }`,
+ * but `parseNewsletterMetadata` returns the raw MEX object, where the subject lives at
+ * `thread_metadata.name.text`. Accept both so a baileys fix does not silently break this.
+ */
+function newsletterName(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== 'object') return undefined;
+  const record = meta as { name?: unknown; thread_metadata?: { name?: unknown } };
+  for (const candidate of [record.name, record.thread_metadata?.name]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    const text = (candidate as { text?: unknown } | null | undefined)?.text;
+    if (typeof text === 'string' && text.trim()) return text.trim();
+  }
+  return undefined;
 }
 
 /** Newest timestamp in a chat's tail, used when the index is over its chat cap. */
@@ -1096,35 +1114,88 @@ export class WhatsAppSession extends DurableObject<Env> {
   }
 
   /**
-   * Fetch group subjects while the socket happens to be open and cache them in DO storage.
-   * Lazy mode means the socket only exists for a minute at a time, so this is best-effort:
-   * a failure keeps the previous names and the next wake tries again.
+   * Fetch group subjects and channel names while the socket happens to be open and cache them in
+   * DO storage. Lazy mode means the socket only exists for a minute at a time, so this is
+   * best-effort: a failure keeps the previous names and the next wake tries again.
    */
   private async refreshChatNames(sock: WASocket): Promise<void> {
     if (this.fetchingChatNames || sock !== this.sock || !this.connected) return;
     await this.readChatNames();
     const at = this.chatNamesCache ? Date.parse(this.chatNamesCache.at) : 0;
-    if (Number.isFinite(at) && Date.now() - at < CHAT_NAMES_TTL_MS) return;
+    if (Number.isFinite(at) && Date.now() - at < CHAT_NAMES_TTL_MS) {
+      // Older builds cached group subjects only. A cache with no channel entries while the
+      // session does know channels is incomplete, so fill it now instead of waiting 6 h.
+      const cached = this.chatNamesCache?.names ?? {};
+      const hasChannels = Object.keys(cached).some(jid => jid.endsWith('@newsletter'));
+      if (hasChannels || (await this.recentJids('@newsletter', 1)).length === 0) return;
+    }
     this.fetchingChatNames = true;
     try {
-      const all = await withTimeout(
-        sock.groupFetchAllParticipating(),
-        CHAT_NAMES_TIMEOUT_MS,
-      );
-      const names: Record<string, string> = {};
-      for (const [jid, meta] of Object.entries(all)) {
-        const subject = (meta as { subject?: string }).subject?.trim();
-        if (subject) names[jid] = subject;
+      // Start from what we already know so a failed half does not erase the other.
+      const names: Record<string, string> = { ...(this.chatNamesCache?.names ?? {}) };
+      let fetchedSomething = false;
+      try {
+        const all = await withTimeout(
+          sock.groupFetchAllParticipating(),
+          CHAT_NAMES_TIMEOUT_MS,
+        );
+        // Groups are replaced wholesale (a renamed or left group must not linger) …
+        for (const key of Object.keys(names)) if (key.endsWith('@g.us')) delete names[key];
+        for (const [jid, meta] of Object.entries(all)) {
+          const subject = (meta as { subject?: string }).subject?.trim();
+          if (subject) names[jid] = subject;
+        }
+        fetchedSomething = true;
+      } catch {
+        // Stale socket or timeout — keep the group names we had and retry on a later wake.
       }
-      if (Object.keys(names).length === 0) return;
+      // … channels are merged, because they are resolved one by one below.
+      const channels = await this.fetchChannelNames(sock);
+      if (Object.keys(channels).length > 0) {
+        Object.assign(names, channels);
+        fetchedSomething = true;
+      }
+      if (!fetchedSomething || Object.keys(names).length === 0) return;
       this.chatNamesCache = { at: new Date().toISOString(), names };
       await this.ctx.storage.put('chatNames', this.chatNamesCache);
       this.broadcast({ type: 'chat-names', data: names });
-    } catch {
-      // Stale socket or timeout — keep what we had and retry on a later wake.
     } finally {
       this.fetchingChatNames = false;
     }
+  }
+
+  /**
+   * Channel subjects. WhatsApp does not return `@newsletter` chats from
+   * `groupFetchAllParticipating()` and their posts carry no pushName, so without this every
+   * channel renders as `Channel · 280923` instead of its real name.
+   */
+  private async fetchChannelNames(sock: WASocket): Promise<Record<string, string>> {
+    const names: Record<string, string> = {};
+    const jids = await this.recentJids('@newsletter', CHANNEL_NAME_LIMIT);
+    if (jids.length === 0) return names;
+    await Promise.all(
+      jids.map(async jid => {
+        try {
+          const meta = await withTimeout(
+            sock.newsletterMetadata('jid', jid),
+            CHANNEL_NAME_TIMEOUT_MS,
+          );
+          const name = newsletterName(meta);
+          if (name) names[jid] = name;
+        } catch {
+          // Not reachable from this account (or a stale socket); the next window retries.
+        }
+      }),
+    );
+    return names;
+  }
+
+  /** The most recently active chats on one server, newest first. */
+  private async recentJids(suffix: string, limit: number): Promise<string[]> {
+    const index = await this.readChatIndex();
+    const ids = Object.keys(index).filter(jid => jid.endsWith(suffix));
+    ids.sort((a, b) => latestAt(index[b]) - latestAt(index[a]));
+    return ids.slice(0, limit);
   }
 
   /**

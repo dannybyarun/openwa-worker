@@ -193,11 +193,13 @@ export function buildChats(
       ? list.filter(m => !m.fromMe && (m.timestamp ?? '') > mark).length
       : list.filter(m => !m.fromMe).length;
     const isGroup = chatId.endsWith('@g.us');
+    const isChannel = chatId.endsWith('@newsletter');
+    // Group subjects and channel names come from the session's `chat-names` cache.
+    const named = isGroup || isChannel ? groupNames[chatId]?.trim() || undefined : undefined;
     // History only carries the sender's pushName, so keep the last one we saw from
     // the other side: the newest message may well be ours (and have no pushName).
-    const contactName = isGroup
-      ? groupNames[chatId]?.trim() || undefined
-      : [...list].reverse().find(m => !m.fromMe && m.pushName?.trim())?.pushName;
+    const contactName =
+      named ?? [...list].reverse().find(m => !m.fromMe && m.pushName?.trim())?.pushName;
     chats.push({
       chatId,
       name: displayName(chatId, contactName),

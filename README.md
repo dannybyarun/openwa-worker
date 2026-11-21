@@ -44,8 +44,9 @@ the two workerd quirks the transport patch compensates for.
 - **Password login** — the UI asks for `UI_PASSWORD` (falling back to `API_TOKEN`) and keeps a
   signed, expiring HttpOnly cookie. Nothing secret is stored in the browser, and **Sign out** drops
   the session.
-- **Group names** — WhatsApp group chats show their real subject (cached while the session is
-  connected) instead of `Group · 750265`.
+- **Group and channel names** — WhatsApp group chats show their real subject and channels show
+  their real name (both cached while the session is connected) instead of `Group · 750265` or
+  `Channel · 280923`.
 - **A chat list that survives** — a durable chat index keeps the last few messages of up to 80
   chats, so a conversation stays in the sidebar after a drainer acks the message buffer. View-once,
   disappearing, edited and device-sent messages are unwrapped to the real content, and protocol noise

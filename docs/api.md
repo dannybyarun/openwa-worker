@@ -106,9 +106,7 @@ events stream.
 ```
 
 Newest first, capped at the last 200 unacked messages. Intended for the UI; pullers should use
-`/messages`. `groups` maps group JIDs to their WhatsApp subject, cached in the session while it was
-connected (refreshed at most every 6 h). It is empty until the session has connected at least once;
-a `chat-names` event delivers the same map when it refreshes.
+`/messages`. `groups` maps group and channel JIDs (`@g.us`, `@newsletter`) to their WhatsApp subject, cached in the session while it was connected (refreshed at most every 6 h). Channels are resolved one by one with `newsletterMetadata`, so only the 12 most recently active ones are looked up per refresh. It is empty until the session has connected at least once; a `chat-names` event delivers the same map when it refreshes.
 
 `chats` is the durable chat index: up to 80 chats, each with its three most recent displayable
 messages. It survives `/ack` and buffer rollover, so the chat list does not lose a conversation when
