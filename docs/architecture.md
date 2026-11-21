@@ -51,6 +51,7 @@ a bug or a too-eager poller. It returns 429 rather than silently burning quota.
 | `history` | unacked messages, oldest first, capped at 200, each with a monotonic `seq`. |
 | `msgSeq` | the highest `seq` handed out. |
 | `wakes` | `{ date, count }` for the daily connect budget. |
+| `chatNames` | `{ at, names }` — group JID → WhatsApp subject, refreshed at most every 6 h while connected. |
 
 `src/messages.ts` holds the pure cursor logic (`normalizeSequences`, `selectMessages`,
 `pruneAcked`) and is tested by `scripts/cursor.spec.mjs` without a Durable Object or network.
@@ -103,8 +104,14 @@ The QR is returned as the raw payload string. The UI renders it with `qrcode`; a
 - `ui/src/App.tsx` — session/chat selection, dialogs, wake/pair/send actions.
 - `ui/src/hooks/useGateway.ts` — TanStack Query hooks and the events WebSocket, which writes
   directly into the query cache.
-- `ui/src/components/` — chat list, chat pane, bubbles, pairing panel, Radix dialogs, toasts.
+- `ui/src/components/` — chat list, chat pane, bubbles, pairing panel, Radix dialogs, toasts, the
+  free-plan usage dialog.
 - `ui/src/lib/` — typed API client, formatting/grouping helpers, `localStorage` config.
+
+Group subjects and plan usage both arrive through the normal query cache: `/history` carries
+`groups`, the `chat-names` event merges fresh names into it, and `/api/usage` is read on demand by
+the usage dialog (one minute refresh while open). **Draft with AI** posts to `/api/sessions/:id/ai`
+and only fills the composer — the user still presses send.
 
 `npm run build` emits `ui/dist`, which `wrangler.toml` serves through the `[assets]` binding for
 everything outside `/api` and `/health`. Wrangler's `[build]` hook runs the build on deploy, so

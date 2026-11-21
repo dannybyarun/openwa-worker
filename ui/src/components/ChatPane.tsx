@@ -10,6 +10,7 @@ import {
   Send,
   Smile,
   Smartphone,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import type { SessionStatus } from '../lib/api';
@@ -30,6 +31,8 @@ interface ChatPaneProps {
   waking: boolean;
   onSend: (text: string) => Promise<void>;
   sending: boolean;
+  /** Asks the worker's AI for a reply draft; returns null when it failed (already toasted). */
+  onDraft: () => Promise<string | null>;
   onPair: () => void;
   pairing: boolean;
   onOpenSessions: () => void;
@@ -133,7 +136,7 @@ export function ChatPane(props: ChatPaneProps) {
       ) : chat ? (
         <>
           <MessageList chat={chat} />
-          <Composer onSend={props.onSend} sending={props.sending} />
+          <Composer onSend={props.onSend} sending={props.sending} onDraft={props.onDraft} />
         </>
       ) : (
         <EmptyThread status={status} onNewChat={props.onNewChat} />
@@ -185,10 +188,26 @@ function MessageList({ chat }: { chat: ChatSummary }) {
   );
 }
 
-function Composer({ onSend, sending }: { onSend: (text: string) => Promise<void>; sending: boolean }) {
+function Composer({
+  onSend,
+  sending,
+  onDraft,
+}: {
+  onSend: (text: string) => Promise<void>;
+  sending: boolean;
+  onDraft: () => Promise<string | null>;
+}) {
   const [text, setText] = useState('');
+  const [drafting, setDrafting] = useState(false);
   const area = useRef<HTMLTextAreaElement | null>(null);
   const toast = useToast();
+
+  useEffect(() => {
+    const element = area.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${Math.min(element.scrollHeight, 120)}px`;
+  }, [text]);
 
   const submit = async () => {
     const value = text.trim();
@@ -202,6 +221,21 @@ function Composer({ onSend, sending }: { onSend: (text: string) => Promise<void>
     }
   };
 
+  const generate = async () => {
+    if (drafting) return;
+    setDrafting(true);
+    try {
+      const draft = await onDraft();
+      if (!draft) return;
+      setText(draft);
+      area.current?.focus();
+    } catch (error) {
+      toast.notify(`AI draft failed: ${(error as Error).message}`, 'error');
+    } finally {
+      setDrafting(false);
+    }
+  };
+
   return (
     <footer className="flex shrink-0 items-end gap-2 bg-panel px-3 py-2.5">
       <button
@@ -211,6 +245,16 @@ function Composer({ onSend, sending }: { onSend: (text: string) => Promise<void>
         aria-label="Attach a file"
       >
         <Paperclip size={21} />
+      </button>
+      <button
+        type="button"
+        onClick={() => void generate()}
+        disabled={drafting}
+        title="Draft a reply with Workers AI"
+        aria-label="Draft a reply with AI"
+        className="grid size-10 shrink-0 place-items-center rounded-full text-muted transition hover:bg-hover hover:text-accent disabled:opacity-60"
+      >
+        {drafting ? <Loader2 size={19} className="animate-spin" /> : <Sparkles size={20} />}
       </button>
       <div className="flex min-h-[42px] flex-1 items-end rounded-lg bg-panel-2 px-3 py-2">
         <button

@@ -15,6 +15,9 @@ API_TOKEN=
 # Connects per session per UTC day (0 disables the cap).
 # DAILY_WAKE_LIMIT=300
 
+# Workers AI model for "Draft with AI" (the [ai] binding is in wrangler.toml).
+# AI_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
+
 # baileys verbosity: trace | debug | info | warn | error | fatal
 # LOG_LEVEL=info
 

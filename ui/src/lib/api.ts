@@ -34,6 +34,45 @@ export interface SessionSummary {
   me?: Me;
 }
 
+export interface HistoryPage {
+  id: string;
+  messages: Message[];
+  /** Group subjects (jid → name), cached by the session while its socket is open. */
+  groups?: Record<string, string>;
+}
+
+export interface UsageSession {
+  id: string;
+  status: string;
+  idleTtlMs: number;
+  wakes: { used: number; limit: number; remaining: number; limited: boolean };
+}
+
+export interface UsageReport {
+  date: string;
+  freeTier: { durableObjectGbSecondsPerDay: number; requestsPerDay: number };
+  estimate: {
+    wakes: number;
+    perWakeGbSeconds: number;
+    doGbSeconds: number;
+    projectedDoGbSeconds: number;
+    doPercentOfFree: number;
+  };
+  idleTtlMs: number;
+  sessions: UsageSession[];
+  warnings: string[];
+  note: string;
+}
+
+export interface AiDraft {
+  session: string;
+  chatId: string;
+  mode: 'reply' | 'summary';
+  model: string;
+  messages: number;
+  draft: string;
+}
+
 export interface Message {
   id?: string;
   chatId: string;
@@ -124,7 +163,14 @@ export const api = {
   logout: (c: Config, id: string) =>
     request<{ ok: boolean }>(c, `/api/sessions/${seg(id)}/logout`, { method: 'POST' }),
   history: (c: Config, id: string) =>
-    request<{ id: string; messages: Message[] }>(c, `/api/sessions/${seg(id)}/history`),
+    request<HistoryPage>(c, `/api/sessions/${seg(id)}/history`),
+  ai: (c: Config, id: string, chatId: string, mode: 'reply' | 'summary' = 'reply', instruction?: string) =>
+    request<AiDraft>(c, `/api/sessions/${seg(id)}/ai`, {
+      method: 'POST',
+      body: JSON.stringify({ chatId, mode, ...(instruction ? { instruction } : {}) }),
+    }),
+  /** Free-plan usage estimate for every session plus the worker's own budget counters. */
+  usage: (c: Config) => request<UsageReport>(c, '/api/usage'),
   sendText: (c: Config, id: string, chatId: string, text: string) =>
     request<{ id?: string; chatId: string; timestamp?: string }>(
       c,

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { MessageSquarePlus, QrCode, Search, Settings2 } from 'lucide-react';
+import { Gauge, MessageSquarePlus, QrCode, Search, Settings2 } from 'lucide-react';
 import type { SessionStatus } from '../lib/api';
 import type { ChatSummary } from '../lib/format';
 import { listTime, messagePreview } from '../lib/format';
@@ -16,6 +16,7 @@ interface ChatListProps {
   onNewChat: () => void;
   onSessions: () => void;
   onSettings: () => void;
+  onUsage: () => void;
 }
 
 export function ChatList({
@@ -28,6 +29,7 @@ export function ChatList({
   onNewChat,
   onSessions,
   onSettings,
+  onUsage,
 }: ChatListProps) {
   const [query, setQuery] = useState('');
 
@@ -69,6 +71,15 @@ export function ChatList({
           className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-hover hover:text-ink"
         >
           <QrCode size={19} />
+        </button>
+        <button
+          type="button"
+          onClick={onUsage}
+          title="Free plan usage"
+          aria-label="Free plan usage"
+          className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-hover hover:text-ink"
+        >
+          <Gauge size={19} />
         </button>
         <button
           type="button"

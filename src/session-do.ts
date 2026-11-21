@@ -37,6 +37,10 @@ const MAX_RECONNECT_DELAY_MS = 60_000;
 const FALLBACK_WA_VERSION = [2, 3000, 0] as const;
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // Apps Script relays statements as base64; keep the DO memory bounded
 const HISTORY_LIMIT = 200; // most recent unacked messages kept per session (storage key 'history')
+const CHAT_NAMES_TTL_MS = 6 * 60 * 60 * 1000; // refresh group subjects at most every 6 h
+const CHAT_NAMES_TIMEOUT_MS = 15_000; // groupFetchAllParticipating can hang on a stale socket
+const AI_CONTEXT_MESSAGES = 30; // messages handed to the model as context
+const DEFAULT_AI_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
 export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'idle' | 'closed' | 'loggedOut';
 
@@ -58,6 +62,23 @@ function clampWait(raw: string | null): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_WAIT_MS;
   return Math.min(Math.max(Math.floor(value), 0), MAX_WAIT_MS);
+}
+
+/** Reject a socket query that never answers, so a stale link cannot pin the DO. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -93,6 +114,17 @@ function qrImageFor(text: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Workers AI answers come back as { response } (older models) or a plain string. */
+function extractAiText(answer: unknown): string {
+  if (typeof answer === 'string') return answer.trim();
+  if (answer && typeof answer === 'object') {
+    const record = answer as Record<string, unknown>;
+    const value = record.response ?? record.text ?? record.result;
+    if (typeof value === 'string') return value.trim();
+  }
+  return '';
 }
 
 function mapMessage(m: WAMessage): Record<string, unknown> {
@@ -145,6 +177,9 @@ export class WhatsAppSession extends DurableObject<Env> {
   private cachedVersion?: [number, number, number];
   private statusCache?: SessionStatus;
   private historyBuf?: StoredMessage[];
+  /** Group subjects (jid → name), cached in storage so groups survive idle windows. */
+  private chatNamesCache?: { at: string; names: Record<string, string> };
+  private fetchingChatNames = false;
   /**
    * True only after Baileys emits `connection: open`. The raw WebSocket being open is not
    * enough: the Noise handshake still has to finish, and sending into that window fails with
@@ -183,7 +218,27 @@ export class WhatsAppSession extends DurableObject<Env> {
       }
       if (request.method === 'GET' && action === 'history') {
         const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
-        return json({ id: this.ctx.id.name, messages: history.slice().reverse() });
+        return json({
+          id: this.ctx.id.name,
+          messages: history.slice().reverse(),
+          // Group subjects, so the UI can show "Family" instead of "Group · 750265".
+          groups: await this.readChatNames(),
+        });
+      }
+      // Local counters for the free-tier panel: wake budget per session plus the window length.
+      if (request.method === 'GET' && action === 'usage') {
+        const budget = await this.readWakeBudget();
+        return json({
+          id: this.ctx.id.name,
+          status: (await this.getStatus()).status,
+          idleTtlMs: this.idleTtlMs,
+          wakes: {
+            used: budget.used,
+            limit: budget.limit,
+            remaining: budget.limit > 0 ? Math.max(0, budget.limit - budget.used) : 0,
+            limited: budget.limit > 0,
+          },
+        });
       }
       // Lazy mode: connect for one drain window, then close. See /idle and /ack?close=1.
       if (request.method === 'POST' && action === 'wake') {
@@ -275,6 +330,19 @@ export class WhatsAppSession extends DurableObject<Env> {
       if (request.method === 'POST' && action === 'logout') {
         await this.logout();
         return json({ ok: true, id: this.ctx.id.name });
+      }
+      // AI assist: draft a reply for one chat from its stored history. Never sends anything.
+      if (request.method === 'POST' && action === 'ai') {
+        const body = (await request.json().catch(() => null)) as {
+          chatId?: string;
+          mode?: string;
+          instruction?: string;
+        } | null;
+        if (!body?.chatId || typeof body.chatId !== 'string') {
+          return error('chatId is required', 400);
+        }
+        const mode = body.mode === 'summary' ? 'summary' : 'reply';
+        return await this.draftWithAI(body.chatId, mode, body.instruction);
       }
       return error('not found', 404);
     } catch (err) {
@@ -374,14 +442,8 @@ export class WhatsAppSession extends DurableObject<Env> {
     date: string;
     counted: boolean;
   }> {
-    const date = new Date().toISOString().slice(0, 10);
-    const limit = this.dailyWakeLimit;
+    const { date, limit, used } = await this.readWakeBudget();
     if (limit === 0) return { allowed: true, used: 0, limit, date, counted: false };
-    const stored = (await this.ctx.storage.get<{ date: string; count: number }>('wakes')) ?? {
-      date,
-      count: 0,
-    };
-    const used = stored.date === date ? stored.count : 0;
     if (!count) {
       // Already connected: waking only extends the window, so it must not eat the budget.
       return { allowed: true, used, limit, date, counted: false };
@@ -389,6 +451,18 @@ export class WhatsAppSession extends DurableObject<Env> {
     if (used >= limit) return { allowed: false, used, limit, date, counted: false };
     await this.ctx.storage.put('wakes', { date, count: used + 1 });
     return { allowed: true, used: used + 1, limit, date, counted: true };
+  }
+
+  /** Read-only view of today's wake budget, for the free-tier panel. */
+  private async readWakeBudget(): Promise<{ date: string; limit: number; used: number }> {
+    const date = new Date().toISOString().slice(0, 10);
+    const limit = this.dailyWakeLimit;
+    if (limit === 0) return { date, limit, used: 0 };
+    const stored = (await this.ctx.storage.get<{ date: string; count: number }>('wakes')) ?? {
+      date,
+      count: 0,
+    };
+    return { date, limit, used: stored.date === date ? stored.count : 0 };
   }
 
   private wakeLimitError(budget: { used: number; limit: number }): Response {
@@ -538,6 +612,125 @@ export class WhatsAppSession extends DurableObject<Env> {
     };
   }
 
+  // --- chat names ---------------------------------------------------------------
+
+  private async readChatNames(): Promise<Record<string, string>> {
+    if (!this.chatNamesCache) {
+      const stored = await this.ctx.storage.get<{ at: string; names: Record<string, string> }>(
+        'chatNames',
+      );
+      if (stored) this.chatNamesCache = stored;
+    }
+    return this.chatNamesCache?.names ?? {};
+  }
+
+  /**
+   * Fetch group subjects while the socket happens to be open and cache them in DO storage.
+   * Lazy mode means the socket only exists for a minute at a time, so this is best-effort:
+   * a failure keeps the previous names and the next wake tries again.
+   */
+  private async refreshChatNames(sock: WASocket): Promise<void> {
+    if (this.fetchingChatNames || sock !== this.sock || !this.connected) return;
+    await this.readChatNames();
+    const at = this.chatNamesCache ? Date.parse(this.chatNamesCache.at) : 0;
+    if (Number.isFinite(at) && Date.now() - at < CHAT_NAMES_TTL_MS) return;
+    this.fetchingChatNames = true;
+    try {
+      const all = await withTimeout(
+        sock.groupFetchAllParticipating(),
+        CHAT_NAMES_TIMEOUT_MS,
+      );
+      const names: Record<string, string> = {};
+      for (const [jid, meta] of Object.entries(all)) {
+        const subject = (meta as { subject?: string }).subject?.trim();
+        if (subject) names[jid] = subject;
+      }
+      if (Object.keys(names).length === 0) return;
+      this.chatNamesCache = { at: new Date().toISOString(), names };
+      await this.ctx.storage.put('chatNames', this.chatNamesCache);
+      this.broadcast({ type: 'chat-names', data: names });
+    } catch {
+      // Stale socket or timeout — keep what we had and retry on a later wake.
+    } finally {
+      this.fetchingChatNames = false;
+    }
+  }
+
+  // --- AI assist -----------------------------------------------------------------
+
+  /**
+   * Draft a reply (or summarise) for one chat from its stored history using Workers AI.
+   * Read-only: the draft goes back to the caller, which shows it in the composer. Nothing
+   * is sent on the user's behalf.
+   */
+  private async draftWithAI(
+    chatId: string,
+    mode: 'reply' | 'summary',
+    instruction?: string,
+  ): Promise<Response> {
+    const ai = this.env.AI;
+    if (!ai) return error('Workers AI is not enabled for this worker (missing [ai] binding)', 501);
+
+    const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
+    const thread = history
+      .filter(message => message.chatId === chatId)
+      .slice(-AI_CONTEXT_MESSAGES);
+    if (thread.length === 0) return error('no stored messages in this chat yet', 400);
+
+    const isGroup = chatId.endsWith('@g.us');
+    const names = await this.readChatNames();
+    const chatLabel = names[chatId] ?? (isGroup ? 'a WhatsApp group' : 'a WhatsApp contact');
+    const transcript = thread
+      .map(message => {
+        const text = typeof message.text === 'string' ? message.text.trim() : '';
+        const kind = String(message.type ?? 'message').replace(/Message$/, '') || 'media';
+        const body = text || `(${kind})`;
+        const who = message.fromMe ? 'Me' : String(message.pushName ?? message.sender ?? 'Them');
+        return `${who}: ${body}`;
+      })
+      .join('\n');
+
+    const system =
+      mode === 'summary'
+        ? 'You summarise WhatsApp conversations. Answer with 3-5 short bullet points covering what the other side wants, decisions, and open questions. No preamble.'
+        : `You draft WhatsApp replies in the language of the conversation. The user is "Me"; the other side is a contact${isGroup ? ' in a group chat' : ''}. Write one short, natural reply that can be sent as-is. No quotes, no explanation, no "Me:" prefix.`;
+    const prompt = [
+      `Chat: ${chatLabel}`,
+      instruction?.trim() ? `Extra instruction: ${instruction.trim()}` : '',
+      'Transcript (oldest first):',
+      transcript,
+      mode === 'summary' ? 'Summarise the thread.' : 'Draft my next reply.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const model = this.env.AI_MODEL?.trim() || DEFAULT_AI_MODEL;
+    let answer: unknown;
+    try {
+      answer = await ai.run(model, {
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: mode === 'summary' ? 500 : 300,
+        temperature: 0.4,
+      });
+    } catch (err) {
+      return error(`AI request failed: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+
+    const draft = extractAiText(answer);
+    if (!draft) return error('the model returned an empty answer', 502);
+    return json({
+      session: this.ctx.id.name,
+      chatId,
+      mode,
+      model,
+      messages: thread.length,
+      draft,
+    });
+  }
+
   /**
    * Fire-and-forget delivery of inbound messages to an optional external webhook.
    * Deliberately generic: filters only self-messages, protocol/system noise and
@@ -587,6 +780,8 @@ export class WhatsAppSession extends DurableObject<Env> {
       if (sock.user) {
         status.me = { id: sock.user.id, name: sock.user.name };
       }
+      // Group subjects are only available while the socket is up; cache them now.
+      void this.refreshChatNames(sock).catch(() => {});
     }
     if (connection === 'close') {
       this.connected = false;

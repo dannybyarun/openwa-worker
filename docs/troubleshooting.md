@@ -70,6 +70,30 @@ Sending retries once on a stale socket by design. It will not loop beyond that.
   behind the cap.
 - History is per session and per Durable Object. Switching sessions in the UI switches histories.
 
+## Groups still show `Group · 750265`
+
+Group subjects are only available from WhatsApp while the socket is open, so the first fetch happens
+on the next wake. Press the status chip to wake the session (or send a message) and reload; the names
+are then cached for 6 hours. If a group is very new or you just joined it, the fetch may lag behind
+the message itself.
+
+## "Draft with AI" fails
+
+- `AI is not enabled on this worker (missing [ai] binding)` — the deploy was built without the `[ai]`
+  block in `wrangler.toml`, or the binding was removed. Redeploy with `npm run deploy`.
+- `AI request failed: …` — Workers AI rejected the call (model id, daily Neuron allowance, or a
+  transient error). Check `AI_MODEL` and the Workers AI section of the dashboard.
+- `no stored messages in this chat yet` — the assistant only reads the session's last 200 unacked
+  messages; an empty thread has nothing to draft from.
+
+The assistant never sends by itself: it fills the composer, and you press send.
+
+## Usage numbers look low or jumpy
+
+`GET /api/usage` is an estimate from each session's own wake counter, not Cloudflare's billing. A
+session that was idle all day reports zero, and counters reset at 00:00 UTC. Use the Cloudflare
+dashboard for billed GB-s and request counts.
+
 ## Local `npm run dev` serves a 404 or a blank page
 
 The assets binding points at `ui/dist`, which only exists after a build. Use `npm run dev` (builds

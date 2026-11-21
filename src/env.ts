@@ -24,6 +24,10 @@ export interface Env {
   SESSION_TTL_HOURS?: string;
   /** Optional baileys log verbosity (trace | debug | info | warn | error | fatal). Defaults to info. */
   LOG_LEVEL?: string;
+  /** Workers AI binding (wrangler.toml `[ai]`). Powers "Draft with AI" in a chat. */
+  AI: Ai;
+  /** Optional Workers AI model id. Defaults to @cf/meta/llama-4-scout-17b-16e-instruct. */
+  AI_MODEL?: string;
   /**
    * How long a /wake window keeps the socket open, in ms. Default 60000 (min 5000, max 15 min).
    * Apps Script should call /ack?close=1 or /idle when its drain finishes; this is the safety net.

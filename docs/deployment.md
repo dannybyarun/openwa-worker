@@ -85,6 +85,7 @@ Set production values with `wrangler secret put NAME`; put local values in `.dev
 | `API_TOKEN` | recommended | unset = open | Bearer token for REST (`X-API-Key`, `Authorization: Bearer`), the events socket (`?token=`), and the login password when `UI_PASSWORD` is unset. |
 | `IDLE_TTL_MS` | no | `60000` | How long a wake keeps the socket open (clamped 5 s – 15 min). |
 | `DAILY_WAKE_LIMIT` | no | `300` | Connects per session per UTC day; `0` disables the cap. |
+| `AI_MODEL` | no | `@cf/meta/llama-4-scout-17b-16e-instruct` | Workers AI model used by **Draft with AI** (`POST /api/sessions/:id/ai`). |
 | `INBOUND_WEBHOOK_URL` | no | unset | POST inbound messages here as JSON. |
 | `INBOUND_WEBHOOK_TOKEN` | no | unset | Sent as `Authorization: Bearer` on webhook deliveries. |
 | `LOG_LEVEL` | no | `info` | baileys verbosity: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
@@ -140,6 +141,12 @@ Rules of thumb (4 sessions, ~8 s per drain):
 
 `DAILY_WAKE_LIMIT` is per session, so 15-minute polling leaves room for manual wakes from the UI.
 A 429 means the session hit the cap and will reset at 00:00 UTC.
+
+Open **Free plan usage** in the app (or `GET /api/usage`) for a live estimate: it adds up each
+session's wake counter, projects today's Durable Object GB-s, and warns before you cross 13,000. The
+number is an estimate from the worker's own counters — the Cloudflare dashboard has the billed
+figures. Workers AI (the chat assistant) has its own free daily Neuron allowance and is only used
+when someone presses **Draft with AI**.
 
 ## Updating a deployment
 

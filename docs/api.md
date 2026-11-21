@@ -96,11 +96,68 @@ events stream.
 ### `GET /api/sessions/:id/history`
 
 ```json
-{ "id": "support-bot", "messages": [ { "chatId": "…@s.whatsapp.net", "text": "hi", "seq": 12 } ] }
+{
+  "id": "support-bot",
+  "messages": [ { "chatId": "…@s.whatsapp.net", "text": "hi", "seq": 12 } ],
+  "groups": { "120363025246125497@g.us": "Family" }
+}
 ```
 
 Newest first, capped at the last 200 unacked messages. Intended for the UI; pullers should use
-`/messages`.
+`/messages`. `groups` maps group JIDs to their WhatsApp subject, cached in the session while it was
+connected (refreshed at most every 6 h). It is empty until the session has connected at least once;
+a `chat-names` event delivers the same map when it refreshes.
+
+### `GET /api/usage`
+
+Free-plan guard rail, no Cloudflare API token needed. It asks every session for its own counters and
+estimates Durable Object duration as `wakes × IDLE_TTL_MS × 128 MB`, which is the shape Cloudflare
+bills:
+
+```json
+{
+  "date": "2026-01-01",
+  "freeTier": { "durableObjectGbSecondsPerDay": 13000, "requestsPerDay": 100000 },
+  "estimate": {
+    "wakes": 84, "perWakeGbSeconds": 7.68,
+    "doGbSeconds": 645.1, "projectedDoGbSeconds": 1290, "doPercentOfFree": 9
+  },
+  "idleTtlMs": 60000,
+  "sessions": [
+    { "id": "support-bot", "status": "idle", "idleTtlMs": 60000,
+      "wakes": { "used": 84, "limit": 300, "remaining": 216, "limited": true } }
+  ],
+  "warnings": [],
+  "note": "Estimated from this worker's own wake counters. Cloudflare's dashboard has the billed numbers."
+}
+```
+
+Treat the numbers as an early warning, not billing truth: the dashboard's analytics are the only
+authoritative source (the worker has no analytics token).
+
+### `POST /api/sessions/:id/ai`
+
+Drafts a reply (or a summary) for one chat from the stored history, using Workers AI through the
+`[ai]` binding. It never sends anything — you get text back and decide.
+
+```json
+{ "chatId": "9779800000000@s.whatsapp.net", "mode": "reply", "instruction": "say I'll call tonight" }
+```
+
+```json
+{
+  "session": "support-bot",
+  "chatId": "9779800000000@s.whatsapp.net",
+  "mode": "reply",
+  "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+  "messages": 12,
+  "draft": "Sounds good — I'll call you tonight."
+}
+```
+
+`mode` is `reply` (default) or `summary`; `instruction` is optional. It uses the last 30 stored
+messages for the chat, so a chat with no history returns `400`. `501` means the worker was deployed
+without the `[ai]` binding, `502` the model call failed. Override the model with `AI_MODEL`.
 
 ### `POST /api/sessions/:id/logout` · `DELETE /api/sessions/:id`
 
@@ -206,10 +263,12 @@ Frames are JSON objects with a `type` and `data`:
 { "type": "connection.update", "data": { "id": "support-bot", "status": "qr", "qr": "2@…" } }
 { "type": "message", "data": { "id": "3EB0…", "chatId": "…@s.whatsapp.net", "fromMe": false,
   "pushName": "Ada", "text": "hello", "timestamp": "2026-01-01T00:00:00.000Z", "seq": 42 } }
+{ "type": "chat-names", "data": { "120363025246125497@g.us": "Family" } }
 ```
 
-The UI renders `connection.update` into its status cache and appends `message` frames to the open
-chat. Pairing flow: create → start → listen → render `data.qr` until `status === "connected"`.
+The UI renders `connection.update` into its status cache, appends `message` frames to the open
+chat, and merges `chat-names` into the group-name map. Pairing flow: create → start → listen →
+render `data.qr` until `status === "connected"`.
 
 ## Webhooks
 

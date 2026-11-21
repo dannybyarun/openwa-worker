@@ -24,10 +24,15 @@ new_sqlite_classes = ["WhatsAppSession", "SessionRegistry"]
 # Optional tunables. Defaults live in src/env.ts; set them under [vars] or as secrets.
 # UI_PASSWORD = "..."          # browser login password; falls back to API_TOKEN when unset
 # SESSION_TTL_HOURS = "168"    # browser login lifetime (max 720 h)
+# AI_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"   # Workers AI model for "Draft with AI"
 # IDLE_TTL_MS = "60000"        # connected window per wake (5 s – 15 min)
 # DAILY_WAKE_LIMIT = "300"     # connects/session/UTC day; 0 disables the cap
 # INBOUND_WEBHOOK_URL = "https://example.com/hook"
 # INBOUND_WEBHOOK_TOKEN = "..."
+
+# Workers AI binding for the chat assistant. Uses the free daily Neuron allowance.
+[ai]
+binding = "AI"
 
 # Build the React UI into ./ui/dist before Wrangler uploads the assets.
 [build]

@@ -105,7 +105,11 @@ export interface ChatSummary {
 }
 
 /** Group the flat history into one entry per chat, newest chat first. */
-export function buildChats(messages: Message[], readAt: Record<string, string>): ChatSummary[] {
+export function buildChats(
+  messages: Message[],
+  readAt: Record<string, string>,
+  groupNames: Record<string, string> = {},
+): ChatSummary[] {
   const byChat = new Map<string, Message[]>();
   for (const message of messages) {
     if (!message.chatId) continue;
@@ -126,7 +130,7 @@ export function buildChats(messages: Message[], readAt: Record<string, string>):
     // History only carries the sender's pushName, so keep the last one we saw from
     // the other side: the newest message may well be ours (and have no pushName).
     const contactName = isGroup
-      ? undefined
+      ? groupNames[chatId]?.trim() || undefined
       : [...list].reverse().find(m => !m.fromMe && m.pushName?.trim())?.pushName;
     chats.push({
       chatId,

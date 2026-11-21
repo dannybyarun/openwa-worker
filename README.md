@@ -44,6 +44,13 @@ the two workerd quirks the transport patch compensates for.
 - **Password login** — the UI asks for `UI_PASSWORD` (falling back to `API_TOKEN`) and keeps a
   signed, expiring HttpOnly cookie. Nothing secret is stored in the browser, and **Sign out** drops
   the session.
+- **Group names** — WhatsApp group chats show their real subject (cached while the session is
+  connected) instead of `Group · 750265`.
+- **Free-plan monitor** — **Free plan usage** in the app (or `GET /api/usage`) totals the wake
+  counters, estimates Durable Object GB-s for the day, projects it against the 13,000 GB-s free
+  allowance, and warns before you get close.
+- **Draft with AI** — the ✨ button in a chat asks Workers AI (the `[ai]` binding) for a reply
+  drafted from that thread. It fills the composer; nothing is ever sent for you.
 - **Token auth for scripts** — `API_TOKEN` also works as a bearer token (`X-API-Key`,
   `Authorization: Bearer`, or `?token=` for the events socket) for Apps Script and other clients.
 
@@ -72,6 +79,8 @@ This runs inside the Workers **free plan** for personal use:
   loop from running away. 5-minute polling = 288; see [`apps-script/README.md`](apps-script/README.md)
   for the cadence math against both free quotas.
 - **Bundle:** ~7.5 MiB raw / ~1.5 MiB gzip, under the free plan's 3 MiB compressed limit.
+- **Workers AI:** has its own daily Neuron allowance on the free plan. Only the **Draft with AI**
+  button (and `POST /api/sessions/:id/ai`) spends it, so normal use costs nothing.
 
 ## Deploy
 

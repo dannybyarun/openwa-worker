@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type Config, type Message, type SessionStatus } from '../lib/api';
+import { api, type Config, type HistoryPage, type Message, type SessionStatus } from '../lib/api';
 
 /** Public auth state: whether this worker needs a password and whether we hold a session. */
 export function useAuth(config: Config) {
@@ -38,6 +38,17 @@ export function useHistory(config: Config, sessionId: string | null, enabled = t
     queryFn: () => api.history(config, sessionId as string),
     enabled: Boolean(sessionId) && enabled,
     refetchInterval: 20000,
+    retry: 1,
+  });
+}
+
+/** Free-plan usage, refreshed once a minute while the panel is open. */
+export function useUsage(config: Config, enabled = true) {
+  return useQuery({
+    queryKey: ['usage', config.base, config.token],
+    queryFn: () => api.usage(config),
+    enabled,
+    refetchInterval: enabled ? 60_000 : false,
     retry: 1,
   });
 }
@@ -83,13 +94,21 @@ export function useEvents(config: Config, sessionId: string | null, enabled = tr
         }
         if (frame.type === 'message') {
           const message = frame.data as Message;
-          queryClient.setQueryData<{ id: string; messages: Message[] }>(
+          queryClient.setQueryData<HistoryPage>(
             ['history', config.base, config.token, sessionId],
             previous => {
               if (!previous) return previous;
               if (message.id && previous.messages.some(m => m.id === message.id)) return previous;
               return { ...previous, messages: [...previous.messages, message] };
             },
+          );
+        }
+        if (frame.type === 'chat-names') {
+          const names = frame.data as Record<string, string>;
+          queryClient.setQueryData<HistoryPage>(
+            ['history', config.base, config.token, sessionId],
+            previous =>
+              previous ? { ...previous, groups: { ...(previous.groups ?? {}), ...names } } : previous,
           );
         }
       };

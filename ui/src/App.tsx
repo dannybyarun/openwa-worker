@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  Gauge,
   Loader2,
   MessageCircle,
   Moon,
@@ -30,9 +31,12 @@ import { LoginScreen } from './components/LoginScreen';
 import { SessionsDialog } from './components/SessionsDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { NewChatDialog } from './components/NewChatDialog';
+import { UsageDialog } from './components/UsageDialog';
 import { useToast } from './components/Toaster';
 
-type DialogName = 'sessions' | 'settings' | 'new-chat' | null;
+type DialogName = 'sessions' | 'settings' | 'new-chat' | 'usage' | null;
+
+const NO_GROUP_NAMES: Record<string, string> = {};
 
 export function App() {
   const toast = useToast();
@@ -89,14 +93,15 @@ export function App() {
   }, [sessionId]);
 
   const messages = historyQuery.data?.messages ?? [];
+  const groupNames = historyQuery.data?.groups ?? NO_GROUP_NAMES;
   const chatList = useMemo(() => {
-    const base = buildChats(messages, readAt);
+    const base = buildChats(messages, readAt, groupNames);
     const known = new Set(base.map(chat => chat.chatId));
     const drafts = (extras[sessionId] ?? [])
       .filter(id => !known.has(id))
       .map(id => ({ chatId: id, name: displayName(id), messages: [] as Message[], unread: 0 }));
     return [...drafts, ...base];
-  }, [messages, readAt, extras, sessionId]);
+  }, [messages, readAt, extras, sessionId, groupNames]);
 
   const activeChat = chatId ? (chatList.find(chat => chat.chatId === chatId) ?? null) : null;
 
@@ -194,6 +199,27 @@ export function App() {
     }
   };
 
+  const draft = async (): Promise<string | null> => {
+    if (!sessionId || !chatId) return null;
+    try {
+      const result = await api.ai(config, sessionId, chatId, 'reply');
+      if (!result.draft.trim()) {
+        toast.notify('The model returned an empty draft.', 'error');
+        return null;
+      }
+      return result.draft.trim();
+    } catch (error) {
+      const message = (error as Error).message;
+      toast.notify(
+        /\b501\b/.test(message)
+          ? 'AI is not enabled on this worker — deploy with the [ai] binding.'
+          : `AI draft failed: ${message}`,
+        'error',
+      );
+      return null;
+    }
+  };
+
   const accountName = status?.me?.name || sessionId || 'OpenWA';
   // A 401 means the worker answered but rejected the request; anything else is a
   // transport problem. Telling them apart saves a lot of "is it down?" guessing.
@@ -246,6 +272,9 @@ export function App() {
         <RailButton label="Devices" onClick={() => setDialog('sessions')}>
           <QrCode size={21} />
         </RailButton>
+        <RailButton label="Free plan usage" onClick={() => setDialog('usage')}>
+          <Gauge size={21} />
+        </RailButton>
         <div className="flex-1" />
         <RailButton
           label={theme === 'dark' ? 'Light theme' : 'Dark theme'}
@@ -291,6 +320,7 @@ export function App() {
             onNewChat={() => setDialog('new-chat')}
             onSessions={() => setDialog('sessions')}
             onSettings={() => setDialog('settings')}
+            onUsage={() => setDialog('usage')}
           />
         </div>
       </aside>
@@ -319,6 +349,7 @@ export function App() {
             waking={waking}
             onSend={send}
             sending={sending}
+            onDraft={draft}
             onPair={() => void pair()}
             pairing={pairing}
             onOpenSessions={() => setDialog('sessions')}
@@ -361,6 +392,12 @@ export function App() {
         open={dialog === 'new-chat'}
         onOpenChange={open => setDialog(open ? 'new-chat' : null)}
         onStart={startChat}
+      />
+
+      <UsageDialog
+        open={dialog === 'usage'}
+        onOpenChange={open => setDialog(open ? 'usage' : null)}
+        config={config}
       />
     </div>
   );

@@ -24,6 +24,11 @@ export { SessionRegistry } from './registry-do';
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
+// Cloudflare free-plan allowances (Workers + Durable Objects), per UTC day.
+const FREE_DO_GB_SECONDS = 13_000;
+const FREE_REQUESTS = 100_000;
+const DO_MEMORY_GB = 0.125; // a Durable Object bills 128 MB while it is running
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -80,6 +85,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
 
     const parts = url.pathname.split('/').filter(Boolean); // e.g. ["api", "sessions", ":id", "qr"]
     if (parts[0] !== 'api' || parts[1] !== 'sessions') {
+      if (request.method === 'GET' && url.pathname === '/api/usage') {
+        return cors(await usageReport(env));
+      }
       return error('not found', 404);
     }
 
@@ -146,6 +154,14 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     if (request.method === 'POST' && action === 'send-document') {
       return cors(await stub.fetch(new Request(`${stubUrl(request)}/send-document`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(await request.json().catch(() => null)),
+      })));
+    }
+    // AI draft/summary for one chat. Read-only: the DO returns text, nothing is sent.
+    if (request.method === 'POST' && action === 'ai') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/ai`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(await request.json().catch(() => null)),
@@ -229,6 +245,97 @@ async function listSessions(env: Env): Promise<Response> {
     }),
   );
   return json({ sessions });
+}
+
+interface SessionUsage {
+  id: string;
+  status: string;
+  idleTtlMs: number;
+  wakes: { used: number; limit: number; remaining: number; limited: boolean };
+}
+
+/**
+ * Free-plan usage panel: per-session wake budget plus an estimate of Durable Object
+ * duration. The estimate is `wakes × idle window × 128 MB` — exactly the shape
+ * Cloudflare bills — so it is a useful early warning, not a replacement for the
+ * account dashboard.
+ */
+async function usageReport(env: Env): Promise<Response> {
+  const registry = env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry'));
+  const listed = (await registry.fetch('https://registry/').then(r => r.json())) as {
+    sessions: string[];
+  };
+
+  const sessions: SessionUsage[] = await Promise.all(
+    listed.sessions.map(async name => {
+      const stub = env.WHATSAPP_SESSION.get(env.WHATSAPP_SESSION.idFromName(name));
+      try {
+        const data = (await stub.fetch('https://session/usage').then(r => r.json())) as SessionUsage;
+        return {
+          id: name,
+          status: typeof data.status === 'string' ? data.status : 'unknown',
+          idleTtlMs: Number(data.idleTtlMs) > 0 ? Number(data.idleTtlMs) : 60_000,
+          wakes: {
+            used: Math.max(0, Number(data.wakes?.used) || 0),
+            limit: Math.max(0, Number(data.wakes?.limit) || 0),
+            remaining: Math.max(0, Number(data.wakes?.remaining) || 0),
+            limited: data.wakes?.limited === true,
+          },
+        };
+      } catch {
+        return {
+          id: name,
+          status: 'unknown',
+          idleTtlMs: 60_000,
+          wakes: { used: 0, limit: 0, remaining: 0, limited: false },
+        };
+      }
+    }),
+  );
+
+  const idleTtlMs = sessions[0]?.idleTtlMs ?? 60_000;
+  const perWakeGbSeconds = (idleTtlMs / 1000) * DO_MEMORY_GB;
+  const wakes = sessions.reduce((sum, session) => sum + session.wakes.used, 0);
+  const doGbSeconds = Math.round(wakes * perWakeGbSeconds * 10) / 10;
+
+  const now = new Date();
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const elapsed = Math.min(1, Math.max(0, (now.getTime() - dayStart) / 86_400_000));
+  const projectedDoGbSeconds =
+    elapsed > 0.02 ? Math.round(doGbSeconds / elapsed) : Math.round(doGbSeconds);
+
+  const warnings: string[] = [];
+  if (projectedDoGbSeconds > FREE_DO_GB_SECONDS * 0.8) {
+    warnings.push(
+      `On pace for ~${projectedDoGbSeconds.toLocaleString()} GB-s of Durable Object duration today; ` +
+        `the free plan allows ${FREE_DO_GB_SECONDS.toLocaleString()}. Lower DAILY_WAKE_LIMIT or poll less often.`,
+    );
+  }
+  const exhausted = sessions.filter(session => session.wakes.limited && session.wakes.remaining === 0);
+  if (exhausted.length > 0) {
+    warnings.push(
+      `Daily wake limit reached for ${exhausted.map(session => session.id).join(', ')}; it resets at 00:00 UTC.`,
+    );
+  }
+
+  return json({
+    date: now.toISOString().slice(0, 10),
+    freeTier: {
+      durableObjectGbSecondsPerDay: FREE_DO_GB_SECONDS,
+      requestsPerDay: FREE_REQUESTS,
+    },
+    estimate: {
+      wakes,
+      perWakeGbSeconds: Math.round(perWakeGbSeconds * 100) / 100,
+      doGbSeconds,
+      projectedDoGbSeconds,
+      doPercentOfFree: Math.round((projectedDoGbSeconds / FREE_DO_GB_SECONDS) * 100),
+    },
+    idleTtlMs,
+    sessions,
+    warnings,
+    note: "Estimated from this worker's own wake counters. Cloudflare's dashboard has the billed numbers.",
+  });
 }
 
 async function createSession(request: Request, env: Env): Promise<Response> {
