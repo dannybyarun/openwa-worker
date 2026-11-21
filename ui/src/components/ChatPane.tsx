@@ -13,7 +13,7 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
-import { chatIdToNumber, type Config, type SessionStatus } from '../lib/api';
+import { chatIdToNumber, jidKey, type Config, type SessionStatus } from '../lib/api';
 import type { ChatSummary } from '../lib/format';
 import { groupByDay } from '../lib/format';
 import { useToast } from './Toaster';
@@ -26,6 +26,8 @@ interface ChatPaneProps {
   sessionId: string | null;
   /** Needed so message media can be fetched on demand. */
   config: Config;
+  /** Profile pictures cached by the session (jid → data URL). */
+  avatars?: Record<string, string | null>;
   chat: ChatSummary | null;
   onBack: () => void;
   onWake: () => void;
@@ -62,7 +64,17 @@ export function ChatPane(props: ChatPaneProps) {
 
         {chat ? (
           <>
-            <Avatar name={chat.name} seed={chat.chatId} size={40} group={chat.chatId.endsWith('@g.us')} />
+            <Avatar
+              name={chat.name}
+              seed={chat.chatId}
+              size={40}
+              group={chat.chatId.endsWith('@g.us')}
+              jid={chat.chatId}
+              photo={props.avatars?.[chat.chatId]}
+              config={props.config}
+              sessionId={sessionId}
+              live={connected}
+            />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[15px] font-semibold text-ink">{chat.name}</div>
               <div className="flex items-center gap-1.5 text-[12px] text-muted">
@@ -82,7 +94,16 @@ export function ChatPane(props: ChatPaneProps) {
           </>
         ) : (
           <>
-            <Avatar name={status?.me?.name || sessionId || 'OpenWA'} seed={sessionId ?? ''} size={40} />
+            <Avatar
+              name={status?.me?.name || sessionId || 'OpenWA'}
+              seed={sessionId ?? ''}
+              size={40}
+              jid={status?.me?.id ? jidKey(status.me.id) : undefined}
+              photo={status?.me?.id ? props.avatars?.[jidKey(status.me.id)] : undefined}
+              config={props.config}
+              sessionId={sessionId}
+              live={connected}
+            />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[15px] font-semibold text-ink">
                 {status?.me?.name || sessionId || 'OpenWA'}

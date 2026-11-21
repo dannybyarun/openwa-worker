@@ -213,6 +213,10 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET' && action === 'media') {
       return cors(await stub.fetch(new Request(`${stubUrl(request)}/media${url.search}`, { method: 'GET' })));
     }
+    // Profile picture for one chat, as a cached data URL (or null when WhatsApp hides it).
+    if (request.method === 'GET' && action === 'avatar') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/avatar${url.search}`, { method: 'GET' })));
+    }
     if ((request.method === 'POST' || request.method === 'DELETE') && action === 'logout') {
       const doResult = await stub.fetch(new Request(`${stubUrl(request)}/logout`, { method: 'POST' }));
       await env.SESSION_REGISTRY.get(env.SESSION_REGISTRY.idFromName('registry')).fetch(

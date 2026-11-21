@@ -53,6 +53,11 @@ const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // Apps Script relays statements as 
 const HISTORY_LIMIT = 200; // most recent unacked messages kept per session (storage key 'history')
 const CHAT_NAMES_TTL_MS = 6 * 60 * 60 * 1000; // refresh group subjects at most every 6 h
 const CHAT_NAMES_TIMEOUT_MS = 15_000; // groupFetchAllParticipating can hang on a stale socket
+const AVATAR_TTL_MS = 24 * 60 * 60 * 1000; // a profile photo rarely changes; refresh daily
+const AVATAR_MISS_TTL_MS = 6 * 60 * 60 * 1000; // a hidden/absent photo is retried sooner
+const AVATAR_FETCH_LIMIT = 15; // avatars refreshed per connected window (free-tier friendly)
+const AVATAR_TIMEOUT_MS = 8_000;
+const AVATAR_MAX_BYTES = 96 * 1024; // a `preview` JPEG fits comfortably in one DO value
 const AI_CONTEXT_MESSAGES = 30; // messages handed to the model as context
 const DEFAULT_AI_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const MEDIA_TYPES = new Set([
@@ -78,6 +83,24 @@ export interface SessionStatus {
 function lastDisconnectCode(error: unknown): number | undefined {
   const boom = error as { output?: { statusCode?: number }; statusCode?: number };
   return boom?.output?.statusCode ?? boom?.statusCode;
+}
+
+const JID_RE = /^[0-9][0-9-]{3,30}@(s\.whatsapp\.net|g\.us|lid|broadcast|newsletter)$/;
+
+/**
+ * `15551234567:33@s.whatsapp.net` → `15551234567@s.whatsapp.net`. The device suffix is
+ * part of our own id but not a valid address for profile lookups.
+ */
+function normalizeJid(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().replace(/:\d+(?=@)/, '');
+  return JID_RE.test(trimmed) ? trimmed : undefined;
+}
+
+/** Cached profile picture: a data URL, or null when WhatsApp returns no photo. */
+interface StoredAvatar {
+  at: number;
+  url: string | null;
 }
 
 /** `?wait=` for /wake: how long to hold the request until the socket is open. */
@@ -288,6 +311,9 @@ export class WhatsAppSession extends DurableObject<Env> {
   /** Group subjects (jid → name), cached in storage so groups survive idle windows. */
   private chatNamesCache?: { at: string; names: Record<string, string> };
   private fetchingChatNames = false;
+  /** Profile pictures (jid → data URL) loaded from storage in one pass for /history. */
+  private avatarsCache?: Record<string, string | null>;
+  private fetchingAvatars = false;
   /** AI / auto-reply settings, cached after the first read. */
   private settingsCache?: SessionSettings;
   /**
@@ -333,6 +359,8 @@ export class WhatsAppSession extends DurableObject<Env> {
           messages: history.slice().reverse(),
           // Group subjects, so the UI can show "Family" instead of "Group · 750265".
           groups: await this.readChatNames(),
+          // Cached profile pictures (data URLs). Missing ones are fetched per chat on demand.
+          avatars: await this.readAvatars(),
         });
       }
       // Per-session AI / auto-reply configuration. The API key is write-only: GET returns
@@ -356,6 +384,10 @@ export class WhatsAppSession extends DurableObject<Env> {
           url.searchParams.get('id') ?? '',
           url.searchParams.get('download') === '1',
         );
+      }
+      // Profile picture for one chat. Served from cache; refetched when the socket happens to be open.
+      if (request.method === 'GET' && action === 'avatar') {
+        return await this.getAvatar(url.searchParams.get('jid') ?? '');
       }
       // Local counters for the free-tier panel: wake budget per session plus the window length.
       if (request.method === 'GET' && action === 'usage') {
@@ -809,6 +841,103 @@ export class WhatsAppSession extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Every cached avatar, read in one pass for `/history`. Storage is keyed per jid
+   * (`avatar:<jid>`) so a single chat can be refreshed without rewriting the rest.
+   */
+  private async readAvatars(): Promise<Record<string, string | null>> {
+    if (!this.avatarsCache) {
+      const entries = await this.ctx.storage.list<StoredAvatar>({ prefix: 'avatar:' });
+      const avatars: Record<string, string | null> = {};
+      for (const [key, value] of entries) {
+        if (value) avatars[key.slice('avatar:'.length)] = value.url ?? null;
+      }
+      this.avatarsCache = avatars;
+    }
+    return this.avatarsCache;
+  }
+
+  private async getAvatar(rawJid: string): Promise<Response> {
+    const jid = normalizeJid(rawJid);
+    if (!jid) {
+      return error('jid must be a WhatsApp address like 9779800000000@s.whatsapp.net', 400);
+    }
+    await this.readAvatars();
+    const known = this.avatarsCache?.[jid];
+    const stored = await this.ctx.storage.get<StoredAvatar>(`avatar:${jid}`);
+    const ttl = stored?.url ? AVATAR_TTL_MS : AVATAR_MISS_TTL_MS;
+    const fresh = stored ? Date.now() - stored.at < ttl : false;
+    if (!fresh) {
+      // Only a connected socket can resolve a profile photo; otherwise serve the cache.
+      const sock = this.sock;
+      if (sock?.ws.isOpen && this.connected) {
+        const url = await this.fetchAvatar(sock, jid);
+        await this.ctx.storage.put(`avatar:${jid}`, { at: Date.now(), url } satisfies StoredAvatar);
+        if (this.avatarsCache) this.avatarsCache[jid] = url;
+        if (url && url !== known) this.broadcast({ type: 'avatar', data: { jid, url } });
+        return json({ jid, url, cached: false });
+      }
+    }
+    const url = known ?? stored?.url ?? null;
+    return json({ jid, url, cached: true });
+  }
+
+  /**
+   * Ask WhatsApp for the *small* profile picture (`preview`) and inline it as a data URL.
+   * Keys: profile photos are often hidden, so null is a normal answer — cache it briefly.
+   */
+  private async fetchAvatar(sock: WASocket, jid: string): Promise<string | null> {
+    try {
+      const link = await withTimeout(sock.profilePictureUrl(jid, 'preview'), AVATAR_TIMEOUT_MS);
+      if (!link) return null;
+      const response = await withTimeout(fetch(link), AVATAR_TIMEOUT_MS);
+      if (!response.ok) return null;
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength === 0 || buffer.byteLength > AVATAR_MAX_BYTES) return null;
+      const contentType = response.headers.get('content-type') ?? 'image/jpeg';
+      return `data:${contentType};base64,${bytesToBase64(new Uint8Array(buffer))}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Refresh profile pictures for the chats that recently produced messages, while the socket
+   * happens to be open. Bounded (`AVATAR_FETCH_LIMIT`) and cached for a day, so a lazy session
+   * spends only a few requests per wake.
+   */
+  private async refreshAvatars(sock: WASocket): Promise<void> {
+    if (this.fetchingAvatars || sock !== this.sock || !this.connected) return;
+    this.fetchingAvatars = true;
+    try {
+      await this.readAvatars();
+      const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
+      const jids = new Set<string>();
+      for (const row of history.slice(-60)) {
+        const jid = normalizeJid(row.chatId);
+        if (jid) jids.add(jid);
+      }
+      const me = normalizeJid(sock.user?.id);
+      if (me) jids.add(me);
+      if (jids.size === 0) return;
+
+      for (const jid of [...jids].slice(0, AVATAR_FETCH_LIMIT)) {
+        if (sock !== this.sock || !this.connected || !sock.ws.isOpen) return;
+        const stored = await this.ctx.storage.get<StoredAvatar>(`avatar:${jid}`);
+        const ttl = stored?.url ? AVATAR_TTL_MS : AVATAR_MISS_TTL_MS;
+        if (stored && Date.now() - stored.at < ttl) continue;
+        const url = await this.fetchAvatar(sock, jid);
+        await this.ctx.storage.put(`avatar:${jid}`, { at: Date.now(), url } satisfies StoredAvatar);
+        if (this.avatarsCache) this.avatarsCache[jid] = url;
+        if (url) this.broadcast({ type: 'avatar', data: { jid, url } });
+      }
+    } catch {
+      // Best effort: a stale socket or a hidden photo must never break the connection.
+    } finally {
+      this.fetchingAvatars = false;
+    }
+  }
+
   // --- settings ------------------------------------------------------------------
 
   private settingsDefaults(): {
@@ -1123,8 +1252,9 @@ export class WhatsAppSession extends DurableObject<Env> {
       if (sock.user) {
         status.me = { id: sock.user.id, name: sock.user.name };
       }
-      // Group subjects are only available while the socket is up; cache them now.
+      // Group subjects and profile pictures are only available while the socket is up.
       void this.refreshChatNames(sock).catch(() => {});
+      void this.refreshAvatars(sock).catch(() => {});
     }
     if (connection === 'close') {
       this.connected = false;
@@ -1287,6 +1417,12 @@ export class WhatsAppSession extends DurableObject<Env> {
     this.reconnectAttempts = 0;
     await this.ctx.storage.deleteAlarm();
     await this.getAuth().then(auth => auth.clear());
+    // A fresh pairing must not inherit the previous account's group names or photos.
+    const avatarKeys = [...(await this.ctx.storage.list({ prefix: 'avatar:' })).keys()];
+    if (avatarKeys.length > 0) await this.ctx.storage.delete(avatarKeys);
+    await this.ctx.storage.delete('chatNames');
+    this.chatNamesCache = undefined;
+    this.avatarsCache = undefined;
     this.statusCache = { status: 'loggedOut', updatedAt: new Date().toISOString() };
     await this.ctx.storage.put('status', this.statusCache);
     this.broadcast({ type: 'connection.update', data: { id: this.ctx.id.name, status: 'loggedOut' } });

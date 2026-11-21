@@ -111,6 +111,19 @@ export function useEvents(config: Config, sessionId: string | null, enabled = tr
               previous ? { ...previous, groups: { ...(previous.groups ?? {}), ...names } } : previous,
           );
         }
+        if (frame.type === 'avatar') {
+          const { jid, url } = frame.data as { jid: string; url: string };
+          queryClient.setQueryData<HistoryPage>(
+            ['history', config.base, config.token, sessionId],
+            previous =>
+              previous ? { ...previous, avatars: { ...(previous.avatars ?? {}), [jid]: url } } : previous,
+          );
+          queryClient.setQueryData(['avatar', config.base, config.token, sessionId, jid], {
+            jid,
+            url,
+            cached: false,
+          });
+        }
       };
 
       socket.onclose = () => {

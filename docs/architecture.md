@@ -52,6 +52,7 @@ a bug or a too-eager poller. It returns 429 rather than silently burning quota.
 | `msgSeq` | the highest `seq` handed out. |
 | `wakes` | `{ date, count }` for the daily connect budget. |
 | `chatNames` | `{ at, names }` — group JID → WhatsApp subject, refreshed at most every 6 h while connected. |
+| `avatar:<jid>` | `{ at, url }` — a small JPEG data URL (`url: null` when WhatsApp hides the photo), refreshed at most daily (6 h for a miss). Deleted on logout. |
 | `settings` | per-session `{ ai: { provider, model, baseUrl, apiKey }, autoReply }`, normalized on write (`src/settings.ts`). The API key is write-only. |
 | `media:<messageId>` | the encrypted protobuf of one media message (a few hundred bytes) plus its key, so `/media` can download the file later. Deleted when the row is trimmed or acked. |
 | `autoReply:<chatId>` | `{ at, day, count }` for the per-chat cooldown and daily reply cap. |

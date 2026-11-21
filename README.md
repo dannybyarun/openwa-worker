@@ -59,9 +59,13 @@ the two workerd quirks the transport patch compensates for.
   default, skips your own messages and groups (unless enabled), and is rate-limited per chat
   (cooldown plus a daily cap).
 - **Links and media** — URLs in a message are clickable, and WhatsApp's own Open Graph card
-  (title, description, thumbnail) is shown when present. Photos, video, voice notes, stickers and
-  documents render a thumbnail with one-click open/download; the full file is fetched from
-  WhatsApp on demand instead of bloating storage.
+  (title, description, thumbnail) is shown when present. Photos show their thumbnail inline at full
+  bubble width (tap to load the original), while video, voice notes, stickers and documents get a
+  compact row with open/download; the full file is fetched from WhatsApp on demand instead of
+  bloating storage.
+- **Profile pictures** — contact and group photos are fetched from WhatsApp while a session is
+  connected, cached in the Durable Object for a day, and shown in the chat list and chat header.
+  When someone hides their photo (or the session is asleep) the UI falls back to coloured initials.
 - **Embeddable website widget** — mint a token in Settings → Website widget and drop one `<script>`
   tag on any site for a "chat with us" bubble. Widget tokens are **send-only**: pinned to one
   account and one chat, origin-allowlisted if you want, capped at 50 messages/day, and they cannot

@@ -5,7 +5,9 @@ import {
   ExternalLink,
   FileText,
   Image as ImageIcon,
+  Loader2,
   MapPin,
+  Maximize2,
   Mic,
   Play,
   Smile,
@@ -134,6 +136,7 @@ function MediaBlock({
   if (!kind || !media) return null;
 
   const type = (message.type ?? '').replace(/Message$/, '');
+  const isImage = type === 'image';
   const size =
     typeof media.fileLength === 'number' && media.fileLength > 0
       ? `${Math.round(media.fileLength / 1024)} KB`
@@ -142,6 +145,9 @@ function MediaBlock({
     ? `${Math.floor(media.seconds / 60)}:${String(Math.round(media.seconds % 60)).padStart(2, '0')}`
     : undefined;
   const canFetch = Boolean(message.id && config && sessionId);
+  // WhatsApp ships a JPEG thumbnail with every photo; show it large and load the bytes only
+  // when someone taps it. Older rows without a thumbnail keep the compact file row.
+  const bigPreview = isImage && Boolean(media.thumbnail) && !blobUrl;
 
   async function load(download: boolean) {
     if (!message.id || !config || !sessionId) return;
@@ -169,55 +175,98 @@ function MediaBlock({
 
   return (
     <div className="mb-1">
-      {blobUrl && type === 'image' && (
-        <img src={blobUrl} alt={media.fileName ?? 'Photo'} className="max-h-80 w-full rounded-md object-contain" />
-      )}
       {blobUrl && type === 'video' && (
         <video src={blobUrl} controls className="max-h-80 w-full rounded-md bg-black" />
       )}
       {blobUrl && type === 'audio' && <audio src={blobUrl} controls className="w-full" />}
 
-      <div className="flex items-center gap-2 rounded-md bg-black/5 px-2 py-2 dark:bg-white/5">
-        {media.thumbnail && !blobUrl ? (
-          <img src={media.thumbnail} alt="" className="size-11 shrink-0 rounded object-cover" />
-        ) : (
-          <kind.icon size={22} className="shrink-0 text-muted" />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-medium text-ink">
-            {media.fileName ?? kind.label}
-          </div>
-          <div className="truncate text-[11.5px] text-muted">
-            {[size, seconds, media.mimetype?.split('/')[1]?.toUpperCase()].filter(Boolean).join(' · ')}
-          </div>
-        </div>
-        {canFetch && (
-          <div className="flex shrink-0 items-center gap-1">
-            {!blobUrl && (
+      {isImage && (blobUrl || bigPreview) ? (
+        <div className="group relative">
+          <img
+            src={blobUrl ?? media.thumbnail}
+            alt={media.fileName ?? 'Photo'}
+            loading="lazy"
+            className={
+              blobUrl
+                ? 'max-h-80 w-full rounded-md object-contain'
+                : 'max-h-72 w-full rounded-md object-cover'
+            }
+          />
+          {size && (
+            <span className="absolute bottom-1.5 left-1.5 rounded bg-black/55 px-1.5 py-0.5 text-[10.5px] font-medium text-white">
+              {size}
+            </span>
+          )}
+          {canFetch && (
+            <div className="absolute right-1.5 bottom-1.5 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+              {!blobUrl && (
+                <button
+                  type="button"
+                  onClick={() => void load(false)}
+                  disabled={busy}
+                  className="grid size-8 place-items-center rounded-full bg-black/55 text-white transition hover:bg-black/75 disabled:opacity-60"
+                  title="Open photo"
+                  aria-label="Open photo"
+                >
+                  {busy ? <Loader2 size={16} className="animate-spin" /> : <Maximize2 size={15} />}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => void load(false)}
+                onClick={() => void load(true)}
+                disabled={busy}
+                className="grid size-8 place-items-center rounded-full bg-black/55 text-white transition hover:bg-black/75 disabled:opacity-60"
+                title="Download"
+                aria-label="Download"
+              >
+                <Download size={16} />
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-md bg-black/5 px-2 py-2 dark:bg-white/5">
+          {media.thumbnail && !blobUrl ? (
+            <img src={media.thumbnail} alt="" className="size-11 shrink-0 rounded object-cover" />
+          ) : (
+            <kind.icon size={22} className="shrink-0 text-muted" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13.5px] font-medium text-ink">
+              {media.fileName ?? kind.label}
+            </div>
+            <div className="truncate text-[11.5px] text-muted">
+              {[size, seconds, media.mimetype?.split('/')[1]?.toUpperCase()].filter(Boolean).join(' · ')}
+            </div>
+          </div>
+          {canFetch && (
+            <div className="flex shrink-0 items-center gap-1">
+              {!blobUrl && (
+                <button
+                  type="button"
+                  onClick={() => void load(false)}
+                  disabled={busy}
+                  className="grid size-8 place-items-center rounded-full text-muted transition hover:bg-black/10 hover:text-ink disabled:opacity-50 dark:hover:bg-white/10"
+                  title={type === 'image' || type === 'video' || type === 'audio' ? 'Open' : 'Open in a new tab'}
+                  aria-label="Open"
+                >
+                  {type === 'video' || type === 'audio' ? <Play size={16} /> : <ExternalLink size={16} />}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void load(true)}
                 disabled={busy}
                 className="grid size-8 place-items-center rounded-full text-muted transition hover:bg-black/10 hover:text-ink disabled:opacity-50 dark:hover:bg-white/10"
-                title={type === 'image' || type === 'video' || type === 'audio' ? 'Open' : 'Open in a new tab'}
-                aria-label="Open"
+                title="Download"
+                aria-label="Download"
               >
-                {type === 'video' || type === 'audio' ? <Play size={16} /> : <ExternalLink size={16} />}
+                <Download size={16} />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void load(true)}
-              disabled={busy}
-              className="grid size-8 place-items-center rounded-full text-muted transition hover:bg-black/10 hover:text-ink disabled:opacity-50 dark:hover:bg-white/10"
-              title="Download"
-              aria-label="Download"
-            >
-              <Download size={16} />
-            </button>
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      )}
       {failed && <div className="mt-1 text-[11.5px] text-danger">{failed}</div>}
     </div>
   );

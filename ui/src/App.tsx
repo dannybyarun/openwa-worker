@@ -94,6 +94,7 @@ export function App() {
 
   const messages = historyQuery.data?.messages ?? [];
   const groupNames = historyQuery.data?.groups ?? NO_GROUP_NAMES;
+  const avatars = historyQuery.data?.avatars ?? {};
   const chatList = useMemo(() => {
     const base = buildChats(messages, readAt, groupNames);
     const known = new Set(base.map(chat => chat.chatId));
@@ -314,6 +315,9 @@ export function App() {
             accountName={accountName}
             accountId={sessionId}
             status={status}
+            config={config}
+            sessionId={sessionId}
+            avatars={avatars}
             chats={chatList}
             activeChatId={chatId}
             onPick={pickChat}
@@ -344,6 +348,7 @@ export function App() {
             sessionId={sessionId}
             status={status}
             config={config}
+            avatars={avatars}
             chat={activeChat}
             onBack={() => setMobileChat(false)}
             onWake={() => void wake()}

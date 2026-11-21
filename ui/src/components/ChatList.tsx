@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Gauge, MessageSquarePlus, QrCode, Search, Settings2 } from 'lucide-react';
-import type { SessionStatus } from '../lib/api';
+import type { Config, SessionStatus } from '../lib/api';
+import { jidKey } from '../lib/api';
 import type { ChatSummary } from '../lib/format';
 import { listTime, messagePreview } from '../lib/format';
 import { Avatar } from './Avatar';
@@ -10,6 +11,12 @@ interface ChatListProps {
   accountName: string;
   accountId: string;
   status?: SessionStatus;
+  /** Worker connection, so avatar lookups can be made per chat. */
+  config?: Config;
+  /** Session the chats belong to. */
+  sessionId?: string | null;
+  /** Profile pictures already cached by the session (jid → data URL). */
+  avatars?: Record<string, string | null>;
   chats: ChatSummary[];
   activeChatId: string | null;
   onPick: (chatId: string) => void;
@@ -23,6 +30,9 @@ export function ChatList({
   accountName,
   accountId,
   status,
+  config,
+  sessionId,
+  avatars,
   chats,
   activeChatId,
   onPick,
@@ -45,7 +55,17 @@ export function ChatList({
     <div className="flex h-full min-h-0 flex-col bg-panel">
       <header className="flex items-center gap-2 px-4 pt-3 pb-2">
         <button type="button" onClick={onSessions} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-          <Avatar name={accountName} seed={accountId} size={40} online={status?.status === 'connected'} />
+          <Avatar
+            name={accountName}
+            seed={accountId}
+            size={40}
+            online={status?.status === 'connected'}
+            jid={status?.me?.id ? jidKey(status.me.id) : undefined}
+            photo={status?.me?.id ? avatars?.[jidKey(status.me.id)] : undefined}
+            config={config}
+            sessionId={sessionId}
+            live={status?.status === 'connected'}
+          />
           <div className="min-w-0">
             <div className="truncate text-[15px] font-semibold text-ink">{accountName}</div>
             <div className="flex items-center gap-1.5 text-[12px] text-muted">
@@ -124,7 +144,17 @@ export function ChatList({
                 active ? 'bg-hover' : 'hover:bg-hover/70'
               }`}
             >
-              <Avatar name={chat.name} seed={chat.chatId} size={47} group={chat.chatId.endsWith('@g.us')} />
+              <Avatar
+                name={chat.name}
+                seed={chat.chatId}
+                size={47}
+                group={chat.chatId.endsWith('@g.us')}
+                jid={chat.chatId}
+                photo={avatars?.[chat.chatId]}
+                config={config}
+                sessionId={sessionId}
+                live={status?.status === 'connected'}
+              />
               <div className="min-w-0 flex-1 border-b border-line/60 pb-2.5">
                 <div className="flex items-baseline gap-2">
                   <span className="min-w-0 flex-1 truncate text-[15px] text-ink">{chat.name}</span>

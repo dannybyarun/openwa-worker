@@ -99,7 +99,8 @@ events stream.
 {
   "id": "support-bot",
   "messages": [ { "chatId": "…@s.whatsapp.net", "text": "hi", "seq": 12 } ],
-  "groups": { "120363025246125497@g.us": "Family" }
+  "groups": { "120363025246125497@g.us": "Family" },
+  "avatars": { "9779800000000@s.whatsapp.net": "data:image/jpeg;base64,…" }
 }
 ```
 
@@ -107,6 +108,10 @@ Newest first, capped at the last 200 unacked messages. Intended for the UI; pull
 `/messages`. `groups` maps group JIDs to their WhatsApp subject, cached in the session while it was
 connected (refreshed at most every 6 h). It is empty until the session has connected at least once;
 a `chat-names` event delivers the same map when it refreshes.
+
+`avatars` holds cached profile pictures as small JPEG data URLs (`null` when WhatsApp reports no
+photo). They are refreshed while the socket is open, at most once a day each, and a missing entry
+can be resolved per chat with `/avatar` below.
 
 ### `GET /api/usage`
 
@@ -226,6 +231,20 @@ row only carries a small JPEG thumbnail; the file is downloaded from WhatsApp wh
 called, then returned with its `content-type` and filename. `download=1` sets
 `content-disposition: attachment`. `404` means the row was pruned from the 200-message history,
 `413` means the file is over 20 MB (tested against `fileLength` before downloading).
+
+### `GET /api/sessions/:id/avatar?jid=<jid>`
+
+The profile picture for one chat, as a small JPEG data URL:
+
+```json
+{ "jid": "9779800000000@s.whatsapp.net", "url": "data:image/jpeg;base64,…", "cached": true }
+```
+
+`url` is `null` when WhatsApp reports no photo (hidden privacy setting, or a chat that never had
+one) — clients should fall back to initials. Avatars are cached in the session for 24 h (a missing
+one is retried after 6 h) and refreshed while the socket is open, so an idle session returns
+`cached: true` with whatever it already knows. `400` means the `jid` is not a WhatsApp address;
+`@g.us` (group) and `@lid` addresses work too.
 
 ### `POST /api/sessions/:id/logout` · `DELETE /api/sessions/:id`
 

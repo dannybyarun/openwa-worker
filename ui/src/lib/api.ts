@@ -39,6 +39,8 @@ export interface HistoryPage {
   messages: Message[];
   /** Group subjects (jid → name), cached by the session while its socket is open. */
   groups?: Record<string, string>;
+  /** Cached profile pictures (jid → data URL, null when WhatsApp hides it). */
+  avatars?: Record<string, string | null>;
 }
 
 export interface UsageSession {
@@ -314,6 +316,12 @@ export const api = {
     }
     return res.blob();
   },
+  /** Cached profile picture for one chat; `null` when WhatsApp hides it or the socket is idle. */
+  avatar: (c: Config, id: string, jid: string) =>
+    request<{ jid: string; url: string | null; cached: boolean }>(
+      c,
+      `/api/sessions/${seg(id)}/avatar?jid=${encodeURIComponent(jid)}`,
+    ),
 };
 
 /** `+977 980-0000000` / `9779800000000` → `9779800000000@s.whatsapp.net`. */export function toChatId(raw: string): string {
@@ -322,6 +330,11 @@ export const api = {
   if (value.includes('@')) return value;
   const digits = value.replace(/[^\d]/g, '');
   return digits ? `${digits}@s.whatsapp.net` : value;
+}
+
+/** `15551234567:33@s.whatsapp.net` → `15551234567@s.whatsapp.net` (device suffix removed). */
+export function jidKey(raw: string): string {
+  return raw.replace(/:\d+(?=@)/, '');
 }
 
 /** `15551234567:33@s.whatsapp.net` → `+15551234567` (drop the device suffix). */
