@@ -66,12 +66,18 @@ the two workerd quirks the transport patch compensates for.
 - **Profile pictures** — contact and group photos are fetched from WhatsApp while a session is
   connected, cached in the Durable Object for a day, and shown in the chat list and chat header.
   When someone hides their photo (or the session is asleep) the UI falls back to coloured initials.
-- **Embeddable website widget** — mint a token in Settings → Website widget and drop one `<script>`
-  tag on any site for a "chat with us" bubble. Widget tokens are **send-only**: pinned to one
-  account and one chat, origin-allowlisted if you want, capped at 50 messages/day, and they cannot
-  read conversations. Generated `full` tokens work like `API_TOKEN` for scripts and can be revoked.
+- **Embeddable website widget** — mint a widget token in **Settings → Sending & widget** and drop one
+  `<script>` tag on any site for a "chat with us" bubble. Widget tokens are **send-only**: pinned to
+  one account and one chat, origin-allowlisted if you want, capped at 50 messages/day, and they
+  cannot read conversations.
+- **Send invoices from your own app** — a `send` token lets your backend push text and documents
+  (PDF invoices) to one session, optionally restricted to an allowlist of chats, 500 sends/day. One
+  `POST /api/send`, no admin secret in your code. Runnable demo in
+  [`examples/invoice-send/`](examples/invoice-send/), guide in
+  [docs/integrations.md](docs/integrations.md).
 - **Token auth for scripts** — `API_TOKEN` also works as a bearer token (`X-API-Key`,
   `Authorization: Bearer`, or `?token=` for the events socket) for Apps Script and other clients.
+  Generated `full` tokens behave the same way and can be revoked without rotating `API_TOKEN`.
 
 ## Screenshots
 
@@ -86,10 +92,41 @@ the two workerd quirks the transport patch compensates for.
 > Captured from the built UI with a stubbed API, so the conversations above are samples, not a
 > real account. The UI itself is the code in [`ui/`](ui/).
 
+## Send from your app
+
+Your backend can send text and documents — invoices, receipts, tickets — with one HTTP call. Mint a
+**server / app** token in **Settings → Sending & widget**, pick the session, optionally list the chats
+it may message, and call:
+
+```bash
+curl -X POST 'https://your-worker.example.com/api/send' \
+  -H 'content-type: application/json' \
+  -d '{
+    "token": "owa_…",
+    "chatId": "9779800000000",
+    "text": "Invoice INV-42 — Rs 2500, due 30 Nov",
+    "document": {
+      "fileName": "invoice-INV-42.pdf",
+      "mimetype": "application/pdf",
+      "caption": "Invoice INV-42 — Rs 2500, due 30 Nov",
+      "base64": "JVBERi0xLjQK…"
+    }
+  }'
+```
+
+A `send` token is bound to one session, can never read chats or settings, and is capped at 500 sends
+per UTC day. Documents are limited to 8 MiB decoded. The endpoint wakes the lazy session itself, so
+there is no `/wake` call first; a burst of invoices shares one connected window.
+
+- [Integration guide](docs/integrations.md) — Node, PHP and static-site recipes, limits, retry and
+  delivery-receipt caveats.
+- [`examples/invoice-send/`](examples/invoice-send/) — runnable CLI and a tiny server + form that
+  builds a PDF and sends it.
+
 ## Embed on your site
 
-Deploy the worker, open **Settings → Website widget**, pick a project-wide chat, and copy the
-snippet:
+Deploy the worker, open **Settings → Sending & widget**, choose **Website widget**, pick a
+project-wide chat, and copy the snippet:
 
 ```html
 <script src="https://your-worker.example.com/embed.js"
@@ -189,7 +226,8 @@ npm run typecheck  # worker + UI
 ## Documentation
 
 - [Deployment and configuration](docs/deployment.md) — one-click, CLI, secrets, custom domains, budgets
-- [API reference](docs/api.md) — every route, the cursor contract, WebSocket events, webhooks
+- [Integrations](docs/integrations.md) — send invoices/messages from your app or site, inbound replies, limits
+- [API reference](docs/api.md) — every route, token kinds, the cursor contract, WebSocket events, webhooks
 - [Architecture](docs/architecture.md) — Durable Objects, lazy lifecycle, the baileys patch, pairing notes
 - [Troubleshooting](docs/troubleshooting.md) — 401/429s, QR problems, send failures
 - [Apps Script drainer](apps-script/README.md) — Sheets inbox/outbox, free-tier cadence math
@@ -198,8 +236,9 @@ npm run typecheck  # worker + UI
 
 - **One linked device per session.** A session is a WhatsApp linked device; use multiple sessions
   for multiple numbers.
-- **Text and documents only.** Media download/upload (images, audio, video) is not implemented;
-  inbound media messages appear as placeholders. Documents can be sent as base64 (≤8 MiB).
+- **Sending is text and documents.** Inbound media (photos, video, voice notes, stickers, documents)
+  is shown and downloaded on demand, but outbound media upload is limited to documents (≤8 MiB);
+  images, audio and video cannot be sent yet.
 - **No delivery/read receipts.** The UI shows a sent tick, not real per-recipient receipts.
 - **Latency is your poll interval.** While a session is idle the socket is closed; WhatsApp queues
   messages and delivers them on the next wake. Nothing is lost, but a webhook-driven real-time setup

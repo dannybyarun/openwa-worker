@@ -64,9 +64,10 @@ Two more single global Durable Objects sit next to the sessions:
 
 - `SessionRegistry` (`idFromName('registry')`) — the list of session names, because DOs cannot be
   enumerated.
-- `TokenStore` (`idFromName('tokens')`) — generated API and widget tokens. Only the SHA-256 hash of
-  a token is stored, keyed by `t:<hash>`; the public list lives under `tokens`. Verification is a
-  `POST /verify` call from the worker, and embed tokens also spend their daily counter there.
+- `TokenStore` (`idFromName('tokens')`) — generated API, send and widget tokens. Only the SHA-256
+  hash of a token is stored, keyed by `t:<hash>`; the public list lives under `tokens`. Verification
+  is a `POST /verify` call from the worker, and `send`/`embed` tokens spend their daily counter there
+  (500 and 50 per UTC day, `dailyLimitFor`).
 
 `src/settings.ts` and `src/tokens.ts` are likewise Durable-Object-free so their specs
 (`scripts/settings.spec.mjs`, `scripts/tokens.spec.mjs`) run under plain `node --test`.
@@ -121,7 +122,7 @@ The QR is returned as the raw payload string. The UI renders it with `qrcode`; a
   directly into the query cache.
 - `ui/src/components/` — chat list, chat pane, bubbles (link previews + on-demand media), pairing
   panel, Radix dialogs, toasts, the free-plan usage dialog, and the settings dialog with
-  Connection / AI & auto-reply / Website widget tabs.
+  Connection / AI & auto-reply / Sending & widget tabs.
 - `ui/src/lib/` — typed API client, formatting/grouping helpers, `localStorage` config.
 - `ui/public/embed.js` — a dependency-free website widget (shadow DOM, no build step) that posts to
   `POST /api/embed/send` with a widget token.

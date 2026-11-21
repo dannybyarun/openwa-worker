@@ -122,19 +122,28 @@ the login cookie is same-origin, so a UI hosted elsewhere cannot sign in (see
 
 Sessions are also manageable over the API — see [API reference](api.md).
 
-## Tokens and the website widget
+## Tokens: sending, embedding and admin
 
 `API_TOKEN` is a single shared secret. The app can also mint individual tokens under **Settings →
-Website widget**, which is the better option once anything public is involved:
+Sending & widget**, which is the better option once anything public is involved:
 
 - **`full`** — admin-equivalent, accepted anywhere `API_TOKEN` is (`X-API-Key`,
   `Authorization: Bearer`, `?token=` on the events socket). Use it for scripts and rotate per client.
-- **`embed`** — send-only, bound to one session and one chat, optionally restricted to a list of
-  origins, capped at 50 messages per UTC day and an expiry you choose. This is what `embed.js` uses.
+- **`send`** — for your own backend: text and document sending (invoices, PDFs) through one session,
+  optionally restricted to an allowlist of chats, capped at 500 sends per UTC day and an expiry you
+  choose. It cannot read history, settings or other chats. Server-only: never ship it to a browser.
+- **`embed`** — send-only website widget, bound to one session and one chat, optionally restricted to
+  a list of origins, capped at 50 messages per UTC day and an expiry you choose. This is what
+  `embed.js` uses.
 
 Only a SHA-256 hash of each token is stored in the `TokenStore` Durable Object, so the value is
-shown exactly once. Revoking it deletes the hash; nothing else changes. The public endpoint is
-`POST /api/embed/send` — it never reads history, settings, or other chats.
+shown exactly once. Revoking it deletes the hash; nothing else changes. The public endpoints are
+`POST /api/send` (`send` tokens) and `POST /api/embed/send` (`embed` tokens) — neither can read
+history, settings, or other chats. Rotating `API_TOKEN` does not invalidate minted tokens; revoke
+those individually.
+
+For the full app-integration walkthrough (Node, PHP, static sites, retries, receipts) see
+[Integrations](integrations.md).
 
 Note the migration: `wrangler.toml` now has a `v2` migration that creates `TokenStore`. Deploying
 over an older worker applies it automatically; deleting the DO afterwards would revoke every token.

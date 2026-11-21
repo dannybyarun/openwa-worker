@@ -151,7 +151,7 @@ export function SettingsDialog({
               [
                 ['connection', 'Connection', Plug],
                 ['automation', 'AI & auto-reply', Sparkles],
-                ['embed', 'Website widget', Copy],
+                ['embed', 'Sending & widget', Copy],
               ] as const
             ).map(([key, label, Icon]) => (
               <button
@@ -625,6 +625,8 @@ function EmbedTab({
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [chatId, setChatId] = useState('');
+  const [kind, setKind] = useState<'embed' | 'send'>('embed');
+  const [chatIds, setChatIds] = useState('');
   const [label, setLabel] = useState('');
   const [origins, setOrigins] = useState('');
   const [days, setDays] = useState(90);
@@ -651,24 +653,30 @@ function EmbedTab({
   }, [chats, chatId]);
 
   const create = async () => {
-    if (!sessionId || !chatId) {
-      toast.notify('Pick a session and a chat first.', 'error');
+    if (!sessionId || (kind === 'embed' && !chatId)) {
+      toast.notify(kind === 'embed' ? 'Pick a session and a chat first.' : 'Pick a session first.', 'error');
       return;
     }
     setCreating(true);
     try {
       const data = await api.createToken(config, {
-        kind: 'embed',
+        kind,
         label: label.trim() || undefined,
         session: sessionId,
-        chatId,
-        origins: origins.trim() || undefined,
+        chatId: kind === 'embed' ? chatId : undefined,
+        chatIds: kind === 'send' ? chatIds.trim() || undefined : undefined,
+        origins: kind === 'embed' ? origins.trim() || undefined : undefined,
         expiresInDays: days,
       });
       setFresh(data);
       setLabel('');
+      setChatIds('');
       await load();
-      toast.notify('Widget token created — copy it now, it is shown once.');
+      toast.notify(
+        kind === 'embed'
+          ? 'Widget token created — copy it now, it is shown once.'
+          : 'Send token created — copy it now, it is shown once.',
+      );
     } catch (error) {
       toast.notify(`Create failed: ${(error as Error).message}`, 'error');
     } finally {
@@ -698,16 +706,19 @@ function EmbedTab({
 
   const host = apiBase(config);
   const snippet = fresh
-    ? `<script src="${host}/embed.js"\n        data-token="${fresh.token}"\n        data-title="Chat with us"\n        async></script>`
+    ? fresh.record.kind === 'send'
+      ? `curl -X POST '${host}/api/send' \\\n  -H 'content-type: application/json' \\\n  -d '{"token":"${fresh.token}","chatId":"9779800000000@s.whatsapp.net","text":"Hello from my app"}'`
+      : `<script src="${host}/embed.js"\n        data-token="${fresh.token}"\n        data-title="Chat with us"\n        async></script>`
     : '';
-  const embeds = tokens.filter(token => token.kind === 'embed');
+  const embeds = tokens.filter(token => token.kind !== 'full');
 
   return (
     <div className="mt-4 space-y-4">
       <p className="rounded-lg bg-panel-2 px-3 py-2.5 text-[12px] leading-5 text-muted">
-        A widget token can <b className="text-ink">only send</b> a message to one chat you pick, from
-        the sites you allow, up to 50 messages a day. It cannot read your chats. Anyone with the token
-        can post to that chat, so treat it as public and revoke it if it leaks.
+        <b className="text-ink">Widget</b> tokens can only send text to one chat, from the sites you
+        allow (50/day). <b className="text-ink">Server</b> tokens let your own backend send text and
+        documents (invoices, PDFs) to any chat — or only the ones you list — up to 500 a day. Neither
+        can read your chats.
       </p>
 
       {!sessionId ? (
@@ -715,23 +726,69 @@ function EmbedTab({
       ) : (
         <div className="space-y-3 rounded-lg border border-line p-3">
           <div>
-            <label htmlFor="embed-chat" className="text-[12px] font-medium text-muted">
-              Chat the widget writes to
-            </label>
-            <select
-              id="embed-chat"
-              value={chatId}
-              onChange={event => setChatId(event.target.value)}
-              className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
-            >
-              {chats.length === 0 && <option value="">Wake the session to load chats</option>}
-              {chats.map(chat => (
-                <option key={chat.chatId} value={chat.chatId}>
-                  {chat.name} — {chat.chatId}
-                </option>
+            <div className="text-[12px] font-medium text-muted">Token type</div>
+            <div className="mt-1.5 grid grid-cols-2 gap-2">
+              {(
+                [
+                  ['embed', 'Website widget', 'One chat, text only, safe to publish.'],
+                  ['send', 'Server / app', 'Text + documents from your backend.'],
+                ] as const
+              ).map(([key, title, hint]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setKind(key)}
+                  className={`rounded-lg px-3 py-2 text-left ring-1 transition ${
+                    kind === key
+                      ? 'bg-accent/10 text-accent ring-accent/40'
+                      : 'bg-panel-2 text-ink ring-line hover:bg-hover'
+                  }`}
+                >
+                  <span className="block text-[12.5px] font-medium">{title}</span>
+                  <span className="mt-0.5 block text-[11px] leading-4 text-muted">{hint}</span>
+                </button>
               ))}
-            </select>
+            </div>
           </div>
+
+          {kind === 'embed' ? (
+            <div>
+              <label htmlFor="embed-chat" className="text-[12px] font-medium text-muted">
+                Chat the widget writes to
+              </label>
+              <select
+                id="embed-chat"
+                value={chatId}
+                onChange={event => setChatId(event.target.value)}
+                className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
+              >
+                {chats.length === 0 && <option value="">Wake the session to load chats</option>}
+                {chats.map(chat => (
+                  <option key={chat.chatId} value={chat.chatId}>
+                    {chat.name} — {chat.chatId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="embed-chats" className="text-[12px] font-medium text-muted">
+                Allowed chats (optional)
+              </label>
+              <input
+                id="embed-chats"
+                value={chatIds}
+                onChange={event => setChatIds(event.target.value)}
+                placeholder="9779800000000, 120363…@g.us"
+                className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
+              />
+              <p className="mt-1 text-[11.5px] text-muted">
+                Comma-separated phone numbers or JIDs. Empty means this token can message any chat —
+                keep it server-side.
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label htmlFor="embed-label" className="text-[12px] font-medium text-muted">
@@ -741,7 +798,7 @@ function EmbedTab({
                 id="embed-label"
                 value={label}
                 onChange={event => setLabel(event.target.value)}
-                placeholder="Website chat"
+                placeholder={kind === 'embed' ? 'Website chat' : 'Invoices'}
                 className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
               />
             </div>
@@ -760,36 +817,40 @@ function EmbedTab({
               />
             </div>
           </div>
-          <div>
-            <label htmlFor="embed-origins" className="text-[12px] font-medium text-muted">
-              Allowed sites (optional)
-            </label>
-            <input
-              id="embed-origins"
-              value={origins}
-              onChange={event => setOrigins(event.target.value)}
-              placeholder="https://example.com, https://shop.example.com"
-              className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
-            />
-            <p className="mt-1 text-[11.5px] text-muted">
-              Comma-separated origins. Empty means any site that has the token.
-            </p>
-          </div>
+          {kind === 'embed' && (
+            <div>
+              <label htmlFor="embed-origins" className="text-[12px] font-medium text-muted">
+                Allowed sites (optional)
+              </label>
+              <input
+                id="embed-origins"
+                value={origins}
+                onChange={event => setOrigins(event.target.value)}
+                placeholder="https://example.com, https://shop.example.com"
+                className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
+              />
+              <p className="mt-1 text-[11.5px] text-muted">
+                Comma-separated origins. Empty means any site that has the token.
+              </p>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => void create()}
-            disabled={creating || !chatId}
+            disabled={creating || (kind === 'embed' && !chatId)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition hover:bg-accent-strong disabled:opacity-60"
           >
             {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-            Create widget token
+            Create {kind === 'embed' ? 'widget' : 'send'} token
           </button>
         </div>
       )}
 
       {fresh && (
         <div className="rounded-lg border border-accent/40 bg-accent/5 p-3">
-          <div className="text-[12px] font-medium text-ink">Token (shown once)</div>
+          <div className="text-[12px] font-medium text-ink">
+            {fresh.record.kind === 'send' ? 'Send token' : 'Widget token'} (shown once)
+          </div>
           <div className="mt-1 flex items-center gap-2">
             <code className="min-w-0 flex-1 break-all rounded bg-panel px-2 py-1.5 text-[11.5px] text-ink">
               {fresh.token}
@@ -803,7 +864,9 @@ function EmbedTab({
               <Copy size={15} />
             </button>
           </div>
-          <div className="mt-3 text-[12px] font-medium text-ink">Paste this on your site</div>
+          <div className="mt-3 text-[12px] font-medium text-ink">
+            {fresh.record.kind === 'send' ? 'Call this from your backend' : 'Paste this on your site'}
+          </div>
           <pre className="mt-1 overflow-auto rounded bg-panel px-2 py-2 text-[11px] leading-5 text-ink">
             {snippet}
           </pre>
@@ -819,7 +882,7 @@ function EmbedTab({
 
       <div>
         <div className="flex items-center justify-between">
-          <div className="text-[12px] font-medium text-muted">Widget tokens</div>
+          <div className="text-[12px] font-medium text-muted">Sending tokens</div>
           {loading && <Loader2 size={13} className="animate-spin text-muted" />}
         </div>
         {embeds.length === 0 ? (
@@ -834,9 +897,18 @@ function EmbedTab({
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium text-ink">
                     {token.label} · <span className="font-normal text-muted">{token.prefix}…</span>
+                    <span className="ml-1.5 rounded bg-panel px-1 py-0.5 text-[10px] font-medium text-muted">
+                      {token.kind === 'send' ? 'server' : 'widget'}
+                    </span>
                   </div>
                   <div className="truncate text-[11px] text-muted">
-                    {token.chatId}
+                    {token.kind === 'send'
+                      ? `${token.session ?? ''} · ${
+                          token.chatIds && token.chatIds.length > 0
+                            ? token.chatIds.join(', ')
+                            : 'any chat'
+                        }`
+                      : token.chatId}
                     {token.expiresAt ? ` · expires ${token.expiresAt.slice(0, 10)}` : ''}
                     {token.origins.length > 0 ? ` · ${token.origins.join(', ')}` : ''}
                   </div>

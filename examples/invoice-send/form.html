@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invoice over WhatsApp — demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #111b21;
+        --muted: #667781;
+        --line: #e3e6e9;
+        --accent: #008069;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b141a;
+          --panel: #111b21;
+          --ink: #e9edef;
+          --muted: #8696a0;
+          --line: #222d34;
+          --accent: #00a884;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      form {
+        width: min(100%, 420px);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 22px;
+        box-shadow: 0 10px 30px rgb(0 0 0 / 6%);
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 18px;
+      }
+      p.hint {
+        margin: 0 0 18px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      label {
+        display: block;
+        margin: 12px 0 5px;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      input {
+        width: 100%;
+        padding: 9px 11px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+      input:focus {
+        outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+        outline-offset: 1px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      button {
+        margin-top: 18px;
+        width: 100%;
+        padding: 11px;
+        border: 0;
+        border-radius: 9px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: progress;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 13px;
+        color: var(--muted);
+        min-height: 20px;
+      }
+      #status.error {
+        color: #d9534f;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="invoice">
+      <h1>Send an invoice</h1>
+      <p class="hint">The server builds the PDF and posts it to your WhatsApp gateway.</p>
+
+      <div class="row">
+        <div>
+          <label for="number">Invoice no.</label>
+          <input id="number" name="number" placeholder="INV-42" />
+        </div>
+        <div>
+          <label for="amount">Amount</label>
+          <input id="amount" name="amount" required inputmode="decimal" placeholder="2500.00" />
+        </div>
+      </div>
+
+      <label for="customer">Customer</label>
+      <input id="customer" name="customer" placeholder="Ada Lovelace" />
+
+      <label for="phone">WhatsApp number</label>
+      <input id="phone" name="phone" required inputmode="tel" placeholder="+977 9800000000" />
+
+      <button type="submit">Send invoice</button>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+
+    <script>
+      const form = document.getElementById('invoice');
+      const status = document.getElementById('status');
+      const button = form.querySelector('button');
+
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        button.disabled = true;
+        status.className = '';
+        status.textContent = 'Sending…';
+        try {
+          const response = await fetch('/api/invoice', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(Object.fromEntries(new FormData(form))),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+          status.textContent = `Sent ${body.number} — message id ${body.id}`;
+          form.reset();
+        } catch (error) {
+          status.className = 'error';
+          status.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

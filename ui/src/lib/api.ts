@@ -168,10 +168,11 @@ export interface SessionSettingsPage {
 export interface TokenRecord {
   id: string;
   label: string;
-  kind: 'full' | 'embed';
+  kind: 'full' | 'send' | 'embed';
   prefix: string;
   session?: string;
   chatId?: string;
+  chatIds?: string[];
   origins: string[];
   createdAt: string;
   expiresAt?: string;
@@ -275,9 +276,10 @@ export const api = {
     c: Config,
     input: {
       label?: string;
-      kind: 'full' | 'embed';
+      kind: 'full' | 'send' | 'embed';
       session?: string;
       chatId?: string;
+      chatIds?: string;
       origins?: string;
       expiresInDays?: number;
     },

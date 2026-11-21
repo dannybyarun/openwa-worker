@@ -399,7 +399,7 @@ interface Message {
 }
 ```
 
-## Tokens and the website widget
+## Tokens: sending, embedding and admin
 
 Admin routes — every one requires the login cookie or an admin token.
 
@@ -409,15 +409,65 @@ Admin routes — every one requires the login cookie or an admin token.
 | `POST /api/tokens` | Create one; the raw value is returned once |
 | `DELETE /api/tokens/:id` | Revoke |
 
+Three kinds, chosen at creation:
+
+| Kind | Use | Can send | Daily cap |
+| --- | --- | --- | --- |
+| `embed` | public website widget | text, one pinned chat | 50 |
+| `send` | your backend / app | text **and** documents, one session, optional chat allowlist | 500 |
+| `full` | scripts, dashboards | everything `API_TOKEN` can do | none |
+
 ```json
 { "kind": "embed", "label": "Website chat", "session": "support-bot",
   "chatId": "9779800000000@s.whatsapp.net", "origins": "https://example.com", "expiresInDays": 90 }
 ```
 
-`kind: "embed"` needs `session` and `chatId` and is send-only. `kind: "full"` is admin-equivalent
-and can be used anywhere `API_TOKEN` is accepted (`X-API-Key`, `Authorization: Bearer`,
-`?token=`). Either way the response is `{ "token": "owa_…", "record": { … } }`; only a SHA-256 hash
-of the value is stored, so copy it immediately.
+```json
+{ "kind": "send", "label": "Invoices", "session": "support-bot",
+  "chatIds": "9779800000000, 9779811111111", "expiresInDays": 365 }
+```
+
+`kind: "embed"` needs `session` and `chatId`. `kind: "send"` needs `session`; `chatIds` is optional
+(a comma string or array, phone numbers or JIDs, max 50) and an empty list means "any chat". Its
+`origins` stay empty for server use — a non-empty list would require a browser `Origin` header.
+`kind: "full"` is admin-equivalent and can be used anywhere `API_TOKEN` is accepted (`X-API-Key`,
+`Authorization: Bearer`, `?token=`). Either way the response is `{ "token": "owa_…", "record": { … } }`;
+only a SHA-256 hash of the value is stored, so copy it immediately.
+
+### `POST /api/send` (public, token-authenticated)
+
+Sending for your own backend, without holding the admin credential. The token must be
+`kind: "send"`; it is bound to one session and can never read history, settings or tokens.
+
+```json
+{
+  "token": "owa_…",
+  "chatId": "9779800000000",
+  "text": "Invoice INV-42 — Rs 2500, due 30 Nov",
+  "document": {
+    "fileName": "invoice-INV-42.pdf",
+    "mimetype": "application/pdf",
+    "caption": "Invoice INV-42 — Rs 2500, due 30 Nov",
+    "base64": "JVBERi0xLjQK…"
+  }
+}
+```
+
+```json
+{ "ok": true, "kind": "document", "chatId": "9779800000000@s.whatsapp.net",
+  "id": "3EB0…", "fileName": "invoice-INV-42.pdf", "bytes": 48112 }
+```
+
+- `chatId` accepts digits (`9779800000000`), a formatted number, or a full JID. When the token has a
+  `chatIds` allowlist, any other target is `403`.
+- Send text only, a document only, or both (`document.caption`, falling back to `text`). Text is
+  capped at 4096 characters, captions at 1024, documents at 8 MiB decoded (`413`).
+- The route opens the lazy window itself and retries once on a stale socket.
+- `401` invalid/expired token, `403` wrong kind / chat not allowed / origin, `429` daily send cap
+  (500/UTC day) or the session's wake budget, `502` WhatsApp refused the send.
+
+See [Integrations](integrations.md) for the server, PHP and static-site recipes, and
+`examples/invoice-send/` for a runnable invoice flow.
 
 ### `POST /api/embed/send` (public, token-authenticated)
 

@@ -3,11 +3,16 @@ import assert from 'node:assert/strict';
 
 import {
   EMBED_DAILY_LIMIT,
+  MAX_TOKEN_CHATS,
   MAX_TOKEN_DAYS,
+  SEND_DAILY_LIMIT,
+  chatAllowed,
+  dailyLimitFor,
   expiryFor,
   hashToken,
   isTokenValue,
   newTokenValue,
+  normalizeChatIds,
   normalizeOrigins,
   originAllowed,
   publicToken,
@@ -93,4 +98,38 @@ test('expiryFor clamps to a year and ignores non-positive values', () => {
 
 test('the embed daily limit is a small, documented number', () => {
   assert.equal(EMBED_DAILY_LIMIT, 50);
+});
+
+test('dailyLimitFor caps send at 500, embed at 50, and leaves full uncapped', () => {
+  assert.equal(dailyLimitFor('send'), SEND_DAILY_LIMIT);
+  assert.equal(dailyLimitFor('embed'), EMBED_DAILY_LIMIT);
+  assert.equal(dailyLimitFor('full'), 0);
+  assert.equal(SEND_DAILY_LIMIT, 500);
+  assert.equal(SEND_DAILY_LIMIT > EMBED_DAILY_LIMIT, true);
+});
+
+test('normalizeChatIds turns numbers into JIDs and keeps full addresses', () => {
+  assert.deepEqual(normalizeChatIds('9779800000000, +977 981-2345678'), [
+    '9779800000000@s.whatsapp.net',
+    '9779812345678@s.whatsapp.net',
+  ]);
+  assert.deepEqual(
+    normalizeChatIds(['120363025246125497@g.us', '273272243511359@lid']),
+    ['120363025246125497@g.us', '273272243511359@lid'],
+  );
+  assert.deepEqual(normalizeChatIds('9779800000000, 9779800000000'), ['9779800000000@s.whatsapp.net']);
+  assert.deepEqual(normalizeChatIds('nope, @@@, ftp://x'), []);
+  assert.deepEqual(normalizeChatIds(undefined), []);
+});
+
+test('normalizeChatIds caps the allowlist', () => {
+  const many = Array.from({ length: MAX_TOKEN_CHATS + 10 }, (_, index) => `${9779800000000 + index}`);
+  assert.equal(normalizeChatIds(many).length, MAX_TOKEN_CHATS);
+});
+
+test('chatAllowed: empty allowlist means any chat', () => {
+  assert.equal(chatAllowed([], '9779800000000@s.whatsapp.net'), true);
+  assert.equal(chatAllowed(undefined, '9779800000000@s.whatsapp.net'), true);
+  assert.equal(chatAllowed(['9779800000000@s.whatsapp.net'], '9779800000000@s.whatsapp.net'), true);
+  assert.equal(chatAllowed(['9779800000000@s.whatsapp.net'], '9779811111111@s.whatsapp.net'), false);
 });

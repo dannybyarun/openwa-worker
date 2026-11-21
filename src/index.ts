@@ -1,6 +1,6 @@
 import { error, json } from './http';
 import type { Env } from './env';
-import { isTokenValue, originAllowed } from './tokens';
+import { chatAllowed, isTokenValue, originAllowed } from './tokens';
 import {
   authRequired,
   authSecret,
@@ -86,6 +86,11 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     // session and one chat; the widget can send, never read.
     if (request.method === 'POST' && url.pathname === '/api/embed/send') {
       return cors(await embedSend(request, env));
+    }
+
+    // Server-to-server sending with a `send` token: text and documents, no read access.
+    if (request.method === 'POST' && url.pathname === '/api/send') {
+      return cors(await tokenSend(request, env));
     }
 
     if (!(await authorized(request, env))) {
@@ -415,10 +420,11 @@ async function createSession(request: Request, env: Env): Promise<Response> {
 interface TokenRecord {
   id: string;
   label: string;
-  kind: 'full' | 'embed';
+  kind: 'full' | 'send' | 'embed';
   prefix: string;
   session?: string;
   chatId?: string;
+  chatIds?: string[];
   origins: string[];
   createdAt: string;
   expiresAt?: string;
@@ -491,6 +497,131 @@ async function embedSend(request: Request, env: Env): Promise<Response> {
     return json(payload ?? { error: 'send failed' }, res.status);
   }
   return json({ ok: true, id: (payload as { id?: string } | null)?.id });
+}
+
+const MAX_SEND_TEXT = 4096;
+const MAX_SEND_CAPTION = 1024;
+const MAX_SEND_DOCUMENT_BYTES = 8 * 1024 * 1024; // matches the DO's base64 document cap
+const CHAT_ID_RE = /^[0-9][0-9-]{3,30}@(s\.whatsapp\.net|g\.us|lid|broadcast|newsletter)$/;
+
+/** `9779800000000`, `+977 980-0000000` or a full JID → `9779800000000@s.whatsapp.net`. */
+function parseChatId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) return undefined;
+  const jid = trimmed.includes('@')
+    ? trimmed
+    : `${trimmed.replace(/[^\d]/g, '')}@s.whatsapp.net`;
+  return CHAT_ID_RE.test(jid) ? jid : undefined;
+}
+
+/**
+ * Server-to-server sending with a `send` token: an app can push messages and invoice
+ * documents from its own backend without holding the admin credential. The token is bound
+ * to one session, may be limited to an allowlist of chats, is capped per UTC day, and can
+ * never read history, settings or tokens.
+ */
+async function tokenSend(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as {
+    token?: unknown;
+    chatId?: unknown;
+    text?: unknown;
+    document?: {
+      fileName?: unknown;
+      mimetype?: unknown;
+      caption?: unknown;
+      base64?: unknown;
+    } | null;
+  } | null;
+  if (!body || typeof body !== 'object') return error('invalid JSON body', 400);
+  if (!isTokenValue(body.token)) return error('a send token is required', 401);
+
+  const verified = await verifyManagedToken(env, body.token);
+  if (!verified.ok) return error(verified.message, verified.status);
+  const record = verified.token;
+  if (record.kind !== 'send') {
+    return error('this endpoint needs a token with kind "send"', 403);
+  }
+  if (!originAllowed(record.origins, request.headers.get('origin'))) {
+    return error('this origin is not allowed to use this token', 403);
+  }
+  const session = record.session ?? '';
+  if (!NAME_RE.test(session)) return error('this token has no valid session', 403);
+
+  const chatId = parseChatId(body.chatId);
+  if (!chatId) {
+    return error('chatId must be a WhatsApp address like 9779800000000@s.whatsapp.net', 400);
+  }
+  if (!chatAllowed(record.chatIds, chatId)) {
+    return error('this token cannot send to that chat', 403);
+  }
+
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  const document = body.document && typeof body.document === 'object' ? body.document : null;
+  const base64 = typeof document?.base64 === 'string' ? document.base64 : undefined;
+  if (document && !base64) {
+    return error('document.base64 is required', 400);
+  }
+  if (!document && !text) return error('text or document is required', 400);
+  if (!document && text.length > MAX_SEND_TEXT) {
+    return error(`text is limited to ${MAX_SEND_TEXT} characters`, 413);
+  }
+  if (document && base64 && base64.length > Math.ceil((MAX_SEND_DOCUMENT_BYTES * 4) / 3) + 8) {
+    return error('the document is over the 8 MB limit', 413);
+  }
+
+  // Reserve the daily slot only once the request is known to be valid.
+  const consumed = await verifyManagedToken(env, body.token, true);
+  if (!consumed.ok) return error(consumed.message, consumed.status);
+
+  const stub = env.WHATSAPP_SESSION.get(env.WHATSAPP_SESSION.idFromName(session));
+
+  if (document) {
+    const fileName =
+      (typeof document.fileName === 'string' ? document.fileName.trim().slice(0, 200) : '') ||
+      'document';
+    const mimetype =
+      (typeof document.mimetype === 'string' ? document.mimetype.trim().slice(0, 120) : '') ||
+      (fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
+    const caption =
+      (typeof document.caption === 'string' ? document.caption.trim().slice(0, MAX_SEND_CAPTION) : '') ||
+      text;
+
+    const res = await stub.fetch(new Request('https://session/send-document', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chatId,
+        fileName,
+        mimetype,
+        caption: caption || undefined,
+        base64,
+      }),
+    }));
+    const payload = (await res.json().catch(() => null)) as
+      | { id?: string; fileName?: string; bytes?: number; error?: string }
+      | null;
+    if (!res.ok) return json(payload ?? { error: 'send failed' }, res.status);
+    return json({
+      ok: true,
+      kind: 'document',
+      chatId,
+      id: payload?.id,
+      fileName: payload?.fileName ?? fileName,
+      bytes: payload?.bytes,
+    });
+  }
+
+  const res = await stub.fetch(new Request('https://session/send-text', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chatId, text }),
+  }));
+  const payload = (await res.json().catch(() => null)) as
+    | { id?: string; error?: string }
+    | null;
+  if (!res.ok) return json(payload ?? { error: 'send failed' }, res.status);
+  return json({ ok: true, kind: 'text', chatId, id: payload?.id });
 }
 
 async function authorized(request: Request, env: Env): Promise<boolean> {

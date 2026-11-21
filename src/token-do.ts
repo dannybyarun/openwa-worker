@@ -1,12 +1,13 @@
 import { DurableObject } from 'cloudflare:workers';
 import { error, json } from './http';
 import {
-  EMBED_DAILY_LIMIT,
   SESSION_RE,
+  dailyLimitFor,
   expiryFor,
   hashToken,
   isTokenValue,
   newTokenValue,
+  normalizeChatIds,
   normalizeOrigins,
   publicToken,
   type StoredToken,
@@ -54,20 +55,25 @@ export class TokenStore extends DurableObject<Env> {
       kind?: unknown;
       session?: unknown;
       chatId?: unknown;
+      chatIds?: unknown;
       origins?: unknown;
       expiresInDays?: unknown;
     } | null;
     if (!body || typeof body !== 'object') return error('invalid JSON body', 400);
 
-    const kind: TokenKind = body.kind === 'embed' ? 'embed' : 'full';
+    const kind: TokenKind =
+      body.kind === 'embed' ? 'embed' : body.kind === 'send' ? 'send' : 'full';
     const label =
       (typeof body.label === 'string' ? body.label.trim().slice(0, 80) : '') ||
-      (kind === 'embed' ? 'Website widget' : 'API token');
+      (kind === 'embed' ? 'Website widget' : kind === 'send' ? 'Server send token' : 'API token');
     const session = typeof body.session === 'string' ? body.session.trim() : '';
     const chatId = typeof body.chatId === 'string' ? body.chatId.trim().slice(0, 200) : '';
     if (kind === 'embed') {
       if (!SESSION_RE.test(session)) return error('a valid session is required for embed tokens', 400);
       if (!chatId) return error('a chatId is required for embed tokens', 400);
+    }
+    if (kind === 'send' && !SESSION_RE.test(session)) {
+      return error('a valid session is required for send tokens', 400);
     }
 
     const value = newTokenValue();
@@ -77,9 +83,10 @@ export class TokenStore extends DurableObject<Env> {
       kind,
       prefix: value.slice(0, 12),
       hash: await hashToken(value),
-      session: kind === 'embed' ? session : undefined,
+      session: kind === 'full' ? undefined : session,
       chatId: kind === 'embed' ? chatId : undefined,
-      origins: kind === 'embed' ? normalizeOrigins(body.origins) : [],
+      chatIds: kind === 'send' ? normalizeChatIds(body.chatIds) : undefined,
+      origins: kind === 'full' ? [] : normalizeOrigins(body.origins),
       createdAt: new Date().toISOString(),
       expiresAt: expiryFor(body.expiresInDays),
       day: new Date().toISOString().slice(0, 10),
@@ -109,11 +116,12 @@ export class TokenStore extends DurableObject<Env> {
       return error('token expired', 401);
     }
 
-    if (body.consume === true && token.kind === 'embed') {
+    if (body.consume === true && token.kind !== 'full') {
+      const limit = dailyLimitFor(token.kind);
       const day = new Date().toISOString().slice(0, 10);
       const used = token.day === day ? token.usesToday ?? 0 : 0;
-      if (used >= EMBED_DAILY_LIMIT) {
-        return error(`daily embed limit reached (${EMBED_DAILY_LIMIT}); it resets at 00:00 UTC`, 429);
+      if (used >= limit) {
+        return error(`daily ${token.kind} limit reached (${limit}); it resets at 00:00 UTC`, 429);
       }
       token.day = day;
       token.usesToday = used + 1;
