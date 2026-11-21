@@ -73,6 +73,27 @@ export interface AiDraft {
   draft: string;
 }
 
+/** Open Graph card WhatsApp itself attached to the message. */
+export interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  /** Small JPEG data URL sent inline by WhatsApp. */
+  thumbnail?: string;
+}
+
+export interface MessageMedia {
+  mimetype?: string;
+  fileName?: string;
+  fileLength?: number;
+  seconds?: number;
+  width?: number;
+  height?: number;
+  ptt?: boolean;
+  /** Small JPEG data URL — the full file is fetched on demand. */
+  thumbnail?: string;
+}
+
 export interface Message {
   id?: string;
   chatId: string;
@@ -83,6 +104,75 @@ export interface Message {
   type?: string;
   text?: string;
   seq?: number;
+  preview?: LinkPreview;
+  media?: MessageMedia;
+}
+
+export type AiProvider = 'workers-ai' | 'openai';
+
+/** Read shape — the API key is never echoed, only `hasApiKey` and a masked hint. */
+export interface AiSettings {
+  provider: AiProvider;
+  model?: string;
+  baseUrl?: string;
+  hasApiKey?: boolean;
+  apiKeyHint?: string;
+}
+
+/** Write shape; `null` clears a stored value. */
+export interface AiSettingsPatch {
+  provider: AiProvider;
+  model?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+}
+
+export interface AutoReplySettings {
+  enabled: boolean;
+  /** `null` clears a previously stored value. */
+  prompt?: string | null;
+  model?: string | null;
+  groups?: boolean;
+  cooldownSeconds?: number;
+  dailyLimit?: number;
+}
+
+export interface SessionSettings {
+  ai?: AiSettings | null;
+  autoReply?: AutoReplySettings;
+}
+
+export interface SessionSettingsPatch {
+  ai?: AiSettingsPatch | null;
+  autoReply?: Partial<AutoReplySettings> | null;
+}
+
+/** Minimal chat shape for the widget picker (the full ChatSummary lives in lib/format). */
+export interface ChatSummaryLike {
+  chatId: string;
+  name: string;
+}
+
+export interface SessionSettingsPage {
+  id: string;
+  settings: SessionSettings;
+  defaults: {
+    provider: AiProvider;
+    aiModel: string;
+    autoReply: { cooldownSeconds: number; dailyLimit: number; groups: boolean };
+  };
+}
+
+export interface TokenRecord {
+  id: string;
+  label: string;
+  kind: 'full' | 'embed';
+  prefix: string;
+  session?: string;
+  chatId?: string;
+  origins: string[];
+  createdAt: string;
+  expiresAt?: string;
 }
 
 export interface Config {
@@ -171,6 +261,31 @@ export const api = {
     }),
   /** Free-plan usage estimate for every session plus the worker's own budget counters. */
   usage: (c: Config) => request<UsageReport>(c, '/api/usage'),
+  settings: (c: Config, id: string) =>
+    request<SessionSettingsPage>(c, `/api/sessions/${seg(id)}/settings`),
+  saveSettings: (c: Config, id: string, patch: SessionSettingsPatch) =>
+    request<SessionSettingsPage>(c, `/api/sessions/${seg(id)}/settings`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    }),
+  tokens: (c: Config) => request<{ tokens: TokenRecord[] }>(c, '/api/tokens'),
+  createToken: (
+    c: Config,
+    input: {
+      label?: string;
+      kind: 'full' | 'embed';
+      session?: string;
+      chatId?: string;
+      origins?: string;
+      expiresInDays?: number;
+    },
+  ) =>
+    request<{ token: string; record: TokenRecord }>(c, '/api/tokens', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  deleteToken: (c: Config, id: string) =>
+    request<{ ok: boolean }>(c, `/api/tokens/${seg(id)}`, { method: 'DELETE' }),
   sendText: (c: Config, id: string, chatId: string, text: string) =>
     request<{ id?: string; chatId: string; timestamp?: string }>(
       c,
@@ -183,10 +298,25 @@ export const api = {
     if (c.token) url.searchParams.set('token', c.token);
     return url.toString();
   },
+  /**
+   * Fetch one media file on demand. The session DO downloads it from WhatsApp, so this
+   * is why the UI shows a thumbnail first and only loads bytes when someone opens it.
+   */
+  mediaBlob: async (c: Config, id: string, messageId: string, download = false) => {
+    const url = new URL(`${apiBase(c)}/api/sessions/${seg(id)}/media`);
+    url.searchParams.set('id', messageId);
+    if (download) url.searchParams.set('download', '1');
+    const headers = new Headers();
+    if (c.token) headers.set('x-api-key', c.token);
+    const res = await fetch(url.toString(), { headers, credentials: 'include' });
+    if (!res.ok) {
+      throw new ApiError(res.status, (await res.text().catch(() => '')) || res.statusText);
+    }
+    return res.blob();
+  },
 };
 
-/** `+977 980-0000000` / `9779800000000` → `9779800000000@s.whatsapp.net`. */
-export function toChatId(raw: string): string {
+/** `+977 980-0000000` / `9779800000000` → `9779800000000@s.whatsapp.net`. */export function toChatId(raw: string): string {
   const value = raw.trim();
   if (!value) return '';
   if (value.includes('@')) return value;

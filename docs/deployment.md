@@ -122,6 +122,23 @@ the login cookie is same-origin, so a UI hosted elsewhere cannot sign in (see
 
 Sessions are also manageable over the API — see [API reference](api.md).
 
+## Tokens and the website widget
+
+`API_TOKEN` is a single shared secret. The app can also mint individual tokens under **Settings →
+Website widget**, which is the better option once anything public is involved:
+
+- **`full`** — admin-equivalent, accepted anywhere `API_TOKEN` is (`X-API-Key`,
+  `Authorization: Bearer`, `?token=` on the events socket). Use it for scripts and rotate per client.
+- **`embed`** — send-only, bound to one session and one chat, optionally restricted to a list of
+  origins, capped at 50 messages per UTC day and an expiry you choose. This is what `embed.js` uses.
+
+Only a SHA-256 hash of each token is stored in the `TokenStore` Durable Object, so the value is
+shown exactly once. Revoking it deletes the hash; nothing else changes. The public endpoint is
+`POST /api/embed/send` — it never reads history, settings, or other chats.
+
+Note the migration: `wrangler.toml` now has a `v2` migration that creates `TokenStore`. Deploying
+over an older worker applies it automatically; deleting the DO afterwards would revoke every token.
+
 ## Free-tier budgets
 
 Two limits matter. Do the math before shortening your poll interval.
@@ -145,8 +162,20 @@ A 429 means the session hit the cap and will reset at 00:00 UTC.
 Open **Free plan usage** in the app (or `GET /api/usage`) for a live estimate: it adds up each
 session's wake counter, projects today's Durable Object GB-s, and warns before you cross 13,000. The
 number is an estimate from the worker's own counters — the Cloudflare dashboard has the billed
-figures. Workers AI (the chat assistant) has its own free daily Neuron allowance and is only used
-when someone presses **Draft with AI**.
+figures. Workers AI (the chat assistant and auto-reply) has its own free daily Neuron allowance and
+is only used when someone presses **Draft with AI** or auto-reply is enabled for a session.
+
+### Choosing an AI provider
+
+The default is Workers AI, which needs no key and stays inside the free plan. If you would rather
+use another model, open **Settings → AI & auto-reply** and pick **OpenAI-compatible**: set the base
+URL (`https://api.openai.com/v1`, `https://api.groq.com/openai/v1`,
+`https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama, …), the model name, and the
+API key. The worker calls `POST {baseUrl}/chat/completions` with `Authorization: Bearer <key>`.
+
+Keys set this way live in the session's Durable Object storage (Cloudflare encrypts DO storage at
+rest) and are never returned by the API — `GET /settings` only reports `hasApiKey` and the last four
+characters. Prefer a scoped/limited key. A session-level setting always wins over `AI_MODEL`.
 
 ## Updating a deployment
 

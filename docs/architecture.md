@@ -52,9 +52,23 @@ a bug or a too-eager poller. It returns 429 rather than silently burning quota.
 | `msgSeq` | the highest `seq` handed out. |
 | `wakes` | `{ date, count }` for the daily connect budget. |
 | `chatNames` | `{ at, names }` — group JID → WhatsApp subject, refreshed at most every 6 h while connected. |
+| `settings` | per-session `{ ai: { provider, model, baseUrl, apiKey }, autoReply }`, normalized on write (`src/settings.ts`). The API key is write-only. |
+| `media:<messageId>` | the encrypted protobuf of one media message (a few hundred bytes) plus its key, so `/media` can download the file later. Deleted when the row is trimmed or acked. |
+| `autoReply:<chatId>` | `{ at, day, count }` for the per-chat cooldown and daily reply cap. |
 
 `src/messages.ts` holds the pure cursor logic (`normalizeSequences`, `selectMessages`,
 `pruneAcked`) and is tested by `scripts/cursor.spec.mjs` without a Durable Object or network.
+
+Two more single global Durable Objects sit next to the sessions:
+
+- `SessionRegistry` (`idFromName('registry')`) — the list of session names, because DOs cannot be
+  enumerated.
+- `TokenStore` (`idFromName('tokens')`) — generated API and widget tokens. Only the SHA-256 hash of
+  a token is stored, keyed by `t:<hash>`; the public list lives under `tokens`. Verification is a
+  `POST /verify` call from the worker, and embed tokens also spend their daily counter there.
+
+`src/settings.ts` and `src/tokens.ts` are likewise Durable-Object-free so their specs
+(`scripts/settings.spec.mjs`, `scripts/tokens.spec.mjs`) run under plain `node --test`.
 
 ## The baileys patches
 
@@ -104,14 +118,21 @@ The QR is returned as the raw payload string. The UI renders it with `qrcode`; a
 - `ui/src/App.tsx` — session/chat selection, dialogs, wake/pair/send actions.
 - `ui/src/hooks/useGateway.ts` — TanStack Query hooks and the events WebSocket, which writes
   directly into the query cache.
-- `ui/src/components/` — chat list, chat pane, bubbles, pairing panel, Radix dialogs, toasts, the
-  free-plan usage dialog.
+- `ui/src/components/` — chat list, chat pane, bubbles (link previews + on-demand media), pairing
+  panel, Radix dialogs, toasts, the free-plan usage dialog, and the settings dialog with
+  Connection / AI & auto-reply / Website widget tabs.
 - `ui/src/lib/` — typed API client, formatting/grouping helpers, `localStorage` config.
+- `ui/public/embed.js` — a dependency-free website widget (shadow DOM, no build step) that posts to
+  `POST /api/embed/send` with a widget token.
 
 Group subjects and plan usage both arrive through the normal query cache: `/history` carries
 `groups`, the `chat-names` event merges fresh names into it, and `/api/usage` is read on demand by
 the usage dialog (one minute refresh while open). **Draft with AI** posts to `/api/sessions/:id/ai`
 and only fills the composer — the user still presses send.
+
+Media follows the same on-demand rule: a message carries a thumbnail and `media` metadata, and
+`/api/sessions/:id/media` streams the file only when someone opens or downloads it. Link previews
+come from the Open Graph card WhatsApp already attached; bare URLs are linkified client-side.
 
 `npm run build` emits `ui/dist`, which `wrangler.toml` serves through the `[assets]` binding for
 everything outside `/api` and `/health`. Wrangler's `[build]` hook runs the build on deploy, so

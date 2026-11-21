@@ -4,8 +4,10 @@ import qrcode from './qrcode';
 import {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   makeWASocket,
+  proto,
   type AuthenticationState,
   type BaileysEventMap,
   type WAMessage,
@@ -15,6 +17,18 @@ import { DurableObjectAuthState } from './auth-state';
 import { createWorkerLogger } from './logger';
 import { error, json } from './http';
 import { normalizeSequences, pruneAcked, selectMessages, type StoredMessage } from './messages';
+import {
+  DEFAULT_AUTO_REPLY_COOLDOWN,
+  DEFAULT_AUTO_REPLY_DAILY,
+  normalizeSettings,
+  publicSettings,
+  resolveAi,
+  validCustomModel,
+  validModel,
+  type AutoReplySettings,
+  type SessionSettings,
+} from './settings';
+import { callOpenAiChat, type ChatMessage } from './ai';
 import type { Env } from './env';
 
 // protobufjs picks its Node Buffer writer when `Buffer` exists. On workerd that writer's
@@ -41,6 +55,15 @@ const CHAT_NAMES_TTL_MS = 6 * 60 * 60 * 1000; // refresh group subjects at most 
 const CHAT_NAMES_TIMEOUT_MS = 15_000; // groupFetchAllParticipating can hang on a stale socket
 const AI_CONTEXT_MESSAGES = 30; // messages handed to the model as context
 const DEFAULT_AI_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
+const MEDIA_TYPES = new Set([
+  'imageMessage',
+  'videoMessage',
+  'audioMessage',
+  'documentMessage',
+  'stickerMessage',
+]);
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024; // don't pull huge videos through a 128 MB DO
+const THUMBNAIL_LIMIT_BYTES = 64 * 1024;
 
 export type SessionStatusName = 'new' | 'connecting' | 'qr' | 'connected' | 'idle' | 'closed' | 'loggedOut';
 
@@ -127,6 +150,86 @@ function extractAiText(answer: unknown): string {
   return '';
 }
 
+/** A thumbnail small enough for DO storage and WebSocket frames. */
+function thumbDataUrl(value: unknown): string | undefined {
+  const bytes = toBytes(value);
+  if (!bytes || bytes.length === 0 || bytes.length > THUMBNAIL_LIMIT_BYTES) return undefined;
+  return `data:image/jpeg;base64,${bytesToBase64(bytes)}`;
+}
+
+function toBytes(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (value && typeof value === 'object') {
+    const record = value as { type?: string; data?: unknown };
+    if (record.type === 'Buffer' && Array.isArray(record.data)) {
+      return new Uint8Array(record.data as number[]);
+    }
+  }
+  return undefined;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/** protobuf Long fields arrive as objects, not numbers. */
+function toNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (value && typeof value === 'object' && 'toNumber' in value) {
+    const n = (value as { toNumber: () => number }).toNumber();
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/** WhatsApp may already ship an Open Graph card with the message; reuse it. */
+function linkPreviewFor(content: proto.IMessage): Record<string, unknown> | undefined {
+  const ext = content.extendedTextMessage;
+  if (!ext) return undefined;
+  const url = (ext.matchedText || '').trim();
+  const title = ext.title?.trim();
+  const description = ext.description?.trim();
+  const thumbnail = thumbDataUrl(ext.jpegThumbnail);
+  if (!url || (!title && !description && !thumbnail)) return undefined;
+  return { url, title, description, thumbnail };
+}
+
+function mediaFor(
+  type: string,
+  content: proto.IMessage,
+): Record<string, unknown> | undefined {
+  if (!MEDIA_TYPES.has(type)) return undefined;
+  const raw = (content as Record<string, unknown>)[type] as Record<string, unknown> | undefined;
+  if (!raw) return undefined;
+  const mimetype = typeof raw.mimetype === 'string' ? raw.mimetype : undefined;
+  const fileName = typeof raw.fileName === 'string' ? raw.fileName : undefined;
+  const fileLength = toNumber(raw.fileLength);
+  const seconds = toNumber(raw.seconds);
+  const width = toNumber(raw.width);
+  const height = toNumber(raw.height);
+  const ptt = raw.ptt === true;
+  return {
+    mimetype,
+    fileName,
+    fileLength,
+    seconds,
+    width,
+    height,
+    ptt,
+    thumbnail: thumbDataUrl(raw.jpegThumbnail),
+  };
+}
+
 function mapMessage(m: WAMessage): Record<string, unknown> {
   const content = m.message ?? {};
   const text =
@@ -136,10 +239,13 @@ function mapMessage(m: WAMessage): Record<string, unknown> {
     content.videoMessage?.caption ??
     content.documentMessage?.caption ??
     '';
+  const type = Object.keys(content)[0] ?? 'unknown';
   const timestamp =
     m.messageTimestamp === undefined
       ? undefined
       : new Date(Number(m.messageTimestamp) * 1000).toISOString();
+  const preview = linkPreviewFor(content);
+  const media = mediaFor(type, content);
   return {
     id: m.key?.id,
     chatId: m.key?.remoteJid,
@@ -147,8 +253,10 @@ function mapMessage(m: WAMessage): Record<string, unknown> {
     sender: m.key?.participant ?? m.key?.remoteJid,
     pushName: m.pushName,
     timestamp,
-    type: Object.keys(content)[0] ?? 'unknown',
+    type,
     text,
+    ...(preview ? { preview } : {}),
+    ...(media ? { media } : {}),
   };
 }
 
@@ -180,6 +288,8 @@ export class WhatsAppSession extends DurableObject<Env> {
   /** Group subjects (jid → name), cached in storage so groups survive idle windows. */
   private chatNamesCache?: { at: string; names: Record<string, string> };
   private fetchingChatNames = false;
+  /** AI / auto-reply settings, cached after the first read. */
+  private settingsCache?: SessionSettings;
   /**
    * True only after Baileys emits `connection: open`. The raw WebSocket being open is not
    * enough: the Noise handshake still has to finish, and sending into that window fails with
@@ -224,6 +334,28 @@ export class WhatsAppSession extends DurableObject<Env> {
           // Group subjects, so the UI can show "Family" instead of "Group · 750265".
           groups: await this.readChatNames(),
         });
+      }
+      // Per-session AI / auto-reply configuration. The API key is write-only: GET returns
+      // `hasApiKey` and a masked hint, never the value.
+      if (request.method === 'GET' && action === 'settings') {
+        return json({
+          id: this.ctx.id.name,
+          settings: publicSettings(await this.readSettings()),
+          defaults: this.settingsDefaults(),
+        });
+      }
+      if (request.method === 'POST' && action === 'settings') {
+        const body = (await request.json().catch(() => null)) as Partial<SessionSettings> | null;
+        if (!body || typeof body !== 'object') return error('invalid JSON body', 400);
+        const settings = await this.writeSettings(body);
+        return json({ id: this.ctx.id.name, settings: publicSettings(settings), defaults: this.settingsDefaults() });
+      }
+      // On-demand media download. The raw protobuf is tiny; the bytes are fetched from WhatsApp.
+      if (request.method === 'GET' && action === 'media') {
+        return await this.getMedia(
+          url.searchParams.get('id') ?? '',
+          url.searchParams.get('download') === '1',
+        );
       }
       // Local counters for the free-tier panel: wake budget per session plus the window length.
       if (request.method === 'GET' && action === 'usage') {
@@ -547,14 +679,30 @@ export class WhatsAppSession extends DurableObject<Env> {
    */
   private async handleIncoming(messages: WAMessage[]): Promise<void> {
     const mapped: Record<string, unknown>[] = [];
+    const rawMedia: Record<string, unknown> = {};
     for (const message of messages) {
-      if (message.key?.remoteJid) mapped.push(mapMessage(message));
+      if (!message.key?.remoteJid) continue;
+      const row = mapMessage(message);
+      mapped.push(row);
+      const type = String(row.type ?? '');
+      if (MEDIA_TYPES.has(type) && message.key.id && message.message) {
+        try {
+          rawMedia[`media:${message.key.id}`] = {
+            key: { ...message.key },
+            bytes: proto.Message.encode(message.message).finish(),
+          };
+        } catch {
+          // Keep the mapped row even if the protobuf cannot be re-encoded.
+        }
+      }
     }
     if (mapped.length === 0) return;
     const stored = await this.appendHistory(mapped);
+    if (Object.keys(rawMedia).length > 0) await this.ctx.storage.put(rawMedia);
     for (const message of stored) {
       this.broadcast({ type: 'message', data: message });
       void this.pushInboundWebhook(message).catch(() => {});
+      void this.maybeAutoReply(message).catch(() => {});
     }
   }
 
@@ -574,9 +722,12 @@ export class WhatsAppSession extends DurableObject<Env> {
     let seq = normalized.maxSeq;
     const added = messages.map(message => ({ ...message, seq: ++seq }));
     buf.push(...added);
-    const trimmed = buf.length > HISTORY_LIMIT ? buf.slice(-HISTORY_LIMIT) : buf;
+    const overflow = Math.max(0, buf.length - HISTORY_LIMIT);
+    const dropped = overflow > 0 ? buf.slice(0, overflow) : [];
+    const trimmed = overflow > 0 ? buf.slice(overflow) : buf;
     this.historyBuf = trimmed;
     await this.ctx.storage.put({ history: trimmed, msgSeq: seq });
+    if (dropped.length > 0) await this.deleteMedia(dropped);
     return added;
   }
 
@@ -604,6 +755,8 @@ export class WhatsAppSession extends DurableObject<Env> {
       await this.ctx.storage.put('history', remaining);
     }
     this.historyBuf = remaining;
+    const pruned = normalized.rows.slice(0, normalized.rows.length - remaining.length);
+    if (pruned.length > 0) await this.deleteMedia(pruned);
     return {
       id: this.ctx.id.name,
       upto,
@@ -656,6 +809,109 @@ export class WhatsAppSession extends DurableObject<Env> {
     }
   }
 
+  // --- settings ------------------------------------------------------------------
+
+  private settingsDefaults(): {
+    provider: 'workers-ai' | 'openai';
+    aiModel: string;
+    autoReply: Required<Pick<AutoReplySettings, 'cooldownSeconds' | 'dailyLimit' | 'groups'>>;
+  } {
+    return {
+      provider: 'workers-ai',
+      aiModel: validModel(this.env.AI_MODEL) ?? DEFAULT_AI_MODEL,
+      autoReply: {
+        cooldownSeconds: DEFAULT_AUTO_REPLY_COOLDOWN,
+        dailyLimit: DEFAULT_AUTO_REPLY_DAILY,
+        groups: false,
+      },
+    };
+  }
+
+  private async readSettings(): Promise<SessionSettings> {
+    if (!this.settingsCache) {
+      this.settingsCache = (await this.ctx.storage.get<SessionSettings>('settings')) ?? {};
+    }
+    return this.settingsCache;
+  }
+
+  private async writeSettings(input: Partial<SessionSettings>): Promise<SessionSettings> {
+    const current = await this.readSettings();
+    const next = normalizeSettings(current, input);
+    this.settingsCache = next;
+    await this.ctx.storage.put('settings', next);
+    return next;
+  }
+
+  // --- media ---------------------------------------------------------------------
+
+  private async deleteMedia(rows: StoredMessage[]): Promise<void> {
+    const keys = rows
+      .map(row => (row.id ? `media:${String(row.id)}` : ''))
+      .filter(Boolean);
+    if (keys.length > 0) await this.ctx.storage.delete(keys);
+  }
+
+  /**
+   * Fetch one media message from WhatsApp on demand. Only the encrypted protobuf is kept in
+   * storage (a few hundred bytes); the bytes never sit in the DO unless someone asks for them.
+   */
+  private async getMedia(id: string, download: boolean): Promise<Response> {
+    if (!id) return error('media id is required', 400);
+    const raw = await this.ctx.storage.get<{ key: Record<string, unknown>; bytes: Uint8Array }>(
+      `media:${id}`,
+    );
+    if (!raw) return error('media not found (it may have been pruned)', 404);
+
+    let content: proto.IMessage;
+    try {
+      content = proto.Message.decode(raw.bytes);
+    } catch {
+      return error('stored media metadata is unreadable', 500);
+    }
+    const type = Object.keys(content)[0] ?? '';
+    const media = mediaFor(type, content);
+    const fileLength = typeof media?.fileLength === 'number' ? media.fileLength : undefined;
+    if (fileLength && fileLength > MAX_MEDIA_BYTES) {
+      return error('this file is too large to open in the browser (20 MB limit)', 413);
+    }
+
+    let buffer: Uint8Array;
+    try {
+      const message = { key: raw.key, message: content } as WAMessage;
+      const result = await downloadMediaMessage(
+        message,
+        'buffer',
+        {},
+        {
+          logger: createWorkerLogger(`wa:${this.ctx.id.name}`, this.logLevel),
+          reuploadRequest: async msg => msg,
+        },
+      );
+      buffer = result as Uint8Array;
+    } catch (err) {
+      return error(
+        `media download failed: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+      );
+    }
+    if (buffer.byteLength > MAX_MEDIA_BYTES) {
+      return error('this file is too large to open in the browser (20 MB limit)', 413);
+    }
+
+    const mimetype = typeof media?.mimetype === 'string' ? media.mimetype : 'application/octet-stream';
+    const fileName = typeof media?.fileName === 'string' && media.fileName
+      ? media.fileName.replace(/[^\w.\- ()]/g, '_').slice(0, 120)
+      : `${id}`;
+    const headers = new Headers({
+      'content-type': mimetype,
+      'content-length': String(buffer.byteLength),
+      'cache-control': 'private, max-age=3600',
+      'content-disposition': `${download ? 'attachment' : 'inline'}; filename="${fileName}"`,
+      'x-content-type-options': 'nosniff',
+    });
+    return new Response(buffer, { headers });
+  }
+
   // --- AI assist -----------------------------------------------------------------
 
   /**
@@ -668,14 +924,42 @@ export class WhatsAppSession extends DurableObject<Env> {
     mode: 'reply' | 'summary',
     instruction?: string,
   ): Promise<Response> {
+    try {
+      const result = await this.runDraft(chatId, mode, instruction);
+      return json({
+        session: this.ctx.id.name,
+        chatId,
+        mode,
+        model: result.model,
+        messages: result.messages,
+        draft: result.draft,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = message.includes('not enabled')
+        ? 501
+        : message.includes('no stored messages')
+          ? 400
+          : 502;
+      return error(message, status);
+    }
+  }
+
+  /** Shared prompt/context builder for manual drafts and auto-replies. Throws on failure. */
+  private async runDraft(
+    chatId: string,
+    mode: 'reply' | 'summary',
+    instruction?: string,
+    modelOverride?: string,
+  ): Promise<{ draft: string; model: string; messages: number }> {
     const ai = this.env.AI;
-    if (!ai) return error('Workers AI is not enabled for this worker (missing [ai] binding)', 501);
+    if (!ai) throw new Error('Workers AI is not enabled for this worker (missing [ai] binding)');
 
     const history = (await this.ctx.storage.get<StoredMessage[]>('history')) ?? [];
     const thread = history
       .filter(message => message.chatId === chatId)
       .slice(-AI_CONTEXT_MESSAGES);
-    if (thread.length === 0) return error('no stored messages in this chat yet', 400);
+    if (thread.length === 0) throw new Error('no stored messages in this chat yet');
 
     const isGroup = chatId.endsWith('@g.us');
     const names = await this.readChatNames();
@@ -704,31 +988,90 @@ export class WhatsAppSession extends DurableObject<Env> {
       .filter(Boolean)
       .join('\n\n');
 
-    const model = this.env.AI_MODEL?.trim() || DEFAULT_AI_MODEL;
-    let answer: unknown;
-    try {
-      answer = await ai.run(model, {
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: mode === 'summary' ? 500 : 300,
+    const settings = await this.readSettings();
+    const resolved = resolveAi(settings, this.env.AI_MODEL, DEFAULT_AI_MODEL);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt },
+    ];
+    const maxTokens = mode === 'summary' ? 500 : 300;
+
+    let draft: string;
+    let model: string;
+    if (resolved.provider === 'openai') {
+      model = validCustomModel(modelOverride) ?? resolved.model ?? '';
+      draft = await callOpenAiChat({
+        baseUrl: resolved.baseUrl,
+        apiKey: resolved.apiKey,
+        model,
+        messages,
+        maxTokens,
         temperature: 0.4,
       });
-    } catch (err) {
-      return error(`AI request failed: ${err instanceof Error ? err.message : String(err)}`, 502);
+    } else {
+      if (!this.env.AI) {
+        throw new Error('Workers AI is not enabled for this worker (missing [ai] binding)');
+      }
+      model = validModel(modelOverride) ?? resolved.model ?? DEFAULT_AI_MODEL;
+      const answer = await this.env.AI.run(model, {
+        messages,
+        max_tokens: maxTokens,
+        temperature: 0.4,
+      });
+      draft = extractAiText(answer);
+      if (!draft) throw new Error('the model returned an empty answer');
     }
 
-    const draft = extractAiText(answer);
-    if (!draft) return error('the model returned an empty answer', 502);
-    return json({
-      session: this.ctx.id.name,
-      chatId,
-      mode,
-      model,
-      messages: thread.length,
-      draft,
-    });
+    return { draft, model, messages: thread.length };
+  }
+
+  /**
+   * Opt-in auto-reply. Runs only inside a connected window, reserves a per-chat slot before
+   * spending a Neural call, and skips groups unless explicitly enabled.
+   */
+  private async maybeAutoReply(message: StoredMessage): Promise<void> {
+    const settings = await this.readSettings();
+    const cfg = settings.autoReply;
+    if (!cfg?.enabled || message.fromMe) return;
+    const chatId = String(message.chatId ?? '');
+    if (!chatId || /(@broadcast|@newsletter|@status)/.test(chatId)) return;
+    if (chatId.endsWith('@g.us') && !cfg.groups) return;
+    const text = String(message.text ?? '').trim();
+    if (!text) return;
+    if (!this.sock || !this.connected) return;
+
+    const day = new Date().toISOString().slice(0, 10);
+    const stateKey = `autoReply:${chatId}`;
+    const state = (await this.ctx.storage.get<{ at: number; day: string; count: number }>(stateKey)) ?? {
+      at: 0,
+      day,
+      count: 0,
+    };
+    const cooldown = (cfg.cooldownSeconds ?? DEFAULT_AUTO_REPLY_COOLDOWN) * 1000;
+    if (Date.now() - state.at < cooldown) return;
+    const usedToday = state.day === day ? state.count : 0;
+    const dailyLimit = cfg.dailyLimit ?? DEFAULT_AUTO_REPLY_DAILY;
+    if (usedToday >= dailyLimit) return;
+
+    // Reserve before the model call so a burst cannot fan out into parallel replies.
+    await this.ctx.storage.put(stateKey, { at: Date.now(), day, count: usedToday + 1 });
+    await this.activate(); // drafting takes a few seconds; keep the socket open long enough
+
+    const draft = await this.runDraft(chatId, 'reply', cfg.prompt ?? undefined, cfg.model ?? undefined).catch(
+      () => null,
+    );
+    if (!draft) return;
+    const sock = this.sock;
+    if (!sock || !this.connected) return;
+    try {
+      const sent = await sock.sendMessage(chatId, { text: draft.draft });
+      if (sent) {
+        const [row] = await this.appendHistory([mapMessage(sent)]);
+        if (row) this.broadcast({ type: 'message', data: row });
+      }
+    } catch {
+      // A failed auto-reply must never surface as a request error; the owner still sees the message.
+    }
   }
 
   /**

@@ -343,6 +343,7 @@ export function App() {
           <ChatPane
             sessionId={sessionId}
             status={status}
+            config={config}
             chat={activeChat}
             onBack={() => setMobileChat(false)}
             onWake={() => void wake()}
@@ -385,6 +386,8 @@ export function App() {
         theme={theme}
         onTheme={setTheme}
         status={status}
+        sessionId={sessionId}
+        chats={chatList}
         onSignOut={auth?.required ? () => void signOut() : undefined}
       />
 

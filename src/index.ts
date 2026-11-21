@@ -1,5 +1,6 @@
 import { error, json } from './http';
 import type { Env } from './env';
+import { isTokenValue, originAllowed } from './tokens';
 import {
   authRequired,
   authSecret,
@@ -21,6 +22,7 @@ import {
 // Wrangler resolves Durable Object bindings by class name, so both classes must be exported here.
 export { WhatsAppSession } from './session-do';
 export { SessionRegistry } from './registry-do';
+export { TokenStore } from './token-do';
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -79,11 +81,41 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       );
     }
 
+    // Publishable website widget. Authenticated by a send-only embed token instead of the
+    // admin secret, so it is handled before the general gate below. The token pins one
+    // session and one chat; the widget can send, never read.
+    if (request.method === 'POST' && url.pathname === '/api/embed/send') {
+      return cors(await embedSend(request, env));
+    }
+
     if (!(await authorized(request, env))) {
       return error('unauthorized', 401);
     }
 
     const parts = url.pathname.split('/').filter(Boolean); // e.g. ["api", "sessions", ":id", "qr"]
+
+    // Generated API / widget tokens (admin-only, like everything below).
+    if (parts[0] === 'api' && parts[1] === 'tokens') {
+      const store = env.TOKEN_STORE.get(env.TOKEN_STORE.idFromName('tokens'));
+      const target = parts[2]
+        ? `https://tokens/${encodeURIComponent(parts[2])}`
+        : 'https://tokens/';
+      if (request.method === 'GET' && !parts[2]) {
+        return cors(await store.fetch(new Request(target, { method: 'GET' })));
+      }
+      if (request.method === 'POST' && !parts[2]) {
+        return cors(await store.fetch(new Request(target, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(await request.json().catch(() => null)),
+        })));
+      }
+      if (request.method === 'DELETE' && parts[2]) {
+        return cors(await store.fetch(new Request(target, { method: 'DELETE' })));
+      }
+      return cors(error('not found', 404));
+    }
+
     if (parts[0] !== 'api' || parts[1] !== 'sessions') {
       if (request.method === 'GET' && url.pathname === '/api/usage') {
         return cors(await usageReport(env));
@@ -166,6 +198,20 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(await request.json().catch(() => null)),
       })));
+    }
+    // Per-session AI model / auto-reply configuration.
+    if ((request.method === 'GET' || request.method === 'POST') && action === 'settings') {
+      const init: RequestInit = { method: request.method };
+      if (request.method === 'POST') {
+        init.headers = { 'content-type': 'application/json' };
+        init.body = JSON.stringify(await request.json().catch(() => null));
+      }
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/settings`, init)));
+    }
+    // Media is a binary stream, so the DO response goes back untouched (status, type,
+    // filename, cache headers). Query strings are forwarded (`id`, `download`).
+    if (request.method === 'GET' && action === 'media') {
+      return cors(await stub.fetch(new Request(`${stubUrl(request)}/media${url.search}`, { method: 'GET' })));
     }
     if ((request.method === 'POST' || request.method === 'DELETE') && action === 'logout') {
       const doResult = await stub.fetch(new Request(`${stubUrl(request)}/logout`, { method: 'POST' }));
@@ -361,16 +407,99 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   return json({ id: name, status }, 201);
 }
 
+/** Stored token record as the TokenStore returns it (no hash, no counters). */
+interface TokenRecord {
+  id: string;
+  label: string;
+  kind: 'full' | 'embed';
+  prefix: string;
+  session?: string;
+  chatId?: string;
+  origins: string[];
+  createdAt: string;
+  expiresAt?: string;
+}
+
+function tokenStore(env: Env) {
+  return env.TOKEN_STORE.get(env.TOKEN_STORE.idFromName('tokens'));
+}
+
+/** Ask the TokenStore about a generated token. `consume` counts an embed use. */
+async function verifyManagedToken(
+  env: Env,
+  value: string,
+  consume = false,
+): Promise<{ ok: true; token: TokenRecord } | { ok: false; status: number; message: string }> {
+  const res = await tokenStore(env).fetch(new Request('https://tokens/verify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: value, consume }),
+  }));
+  const payload = (await res.json().catch(() => null)) as
+    | { token?: TokenRecord; error?: string }
+    | null;
+  if (!res.ok || !payload?.token) {
+    return { ok: false, status: res.status, message: payload?.error ?? 'invalid token' };
+  }
+  return { ok: true, token: payload.token };
+}
+
+/**
+ * Publishable widget endpoint. A `kind: 'embed'` token can only send text to the one chat
+ * it was minted for, from an allowlisted origin if one was given, and is rate-limited by
+ * the TokenStore. It can never read history, settings, or tokens.
+ */
+async function embedSend(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as
+    | { token?: unknown; chatId?: unknown; text?: unknown }
+    | null;
+  const token = typeof body?.token === 'string' ? body.token.trim() : '';
+  const text = typeof body?.text === 'string' ? body.text.trim() : '';
+  if (!isTokenValue(token)) return error('a widget token is required', 401);
+  if (!text) return error('text is required', 400);
+  if (text.length > 1000) return error('text is too long (1000 characters max)', 413);
+
+  const verified = await verifyManagedToken(env, token, true);
+  if (!verified.ok) return error(verified.message, verified.status);
+  const record = verified.token;
+  if (record.kind !== 'embed') return error('this token is not a website widget token', 403);
+  if (!originAllowed(record.origins, request.headers.get('origin'))) {
+    return error('this origin is not allowed to use this token', 403);
+  }
+
+  const chatId = record.chatId ?? '';
+  const session = record.session ?? '';
+  if (!chatId) return error('this token is not bound to a chat', 403);
+  if (!NAME_RE.test(session)) return error('this token has no valid session', 403);
+  const requested = typeof body?.chatId === 'string' ? body.chatId.trim() : '';
+  if (requested && requested !== chatId) {
+    return error('this token can only send to its own chat', 403);
+  }
+
+  const stub = env.WHATSAPP_SESSION.get(env.WHATSAPP_SESSION.idFromName(session));
+  const res = await stub.fetch(new Request('https://session/send-text', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chatId, text }),
+  }));
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    return json(payload ?? { error: 'send failed' }, res.status);
+  }
+  return json({ ok: true, id: (payload as { id?: string } | null)?.id });
+}
+
 async function authorized(request: Request, env: Env): Promise<boolean> {
   const secret = authSecret(env);
   if (!secret) return true; // nothing configured — local-dev posture
 
+  const fromQuery = new URL(request.url).searchParams.get('token');
+  const header = request.headers.get('x-api-key') ?? request.headers.get('authorization') ?? '';
+  const provided = (header.startsWith('Bearer ') ? header.slice(7) : header).trim();
+
   // Scripts and cross-origin clients: the bearer token, also accepted as ?token=
   // because browsers cannot set headers on WebSocket upgrades.
   if (env.API_TOKEN) {
-    const fromQuery = new URL(request.url).searchParams.get('token');
-    const header = request.headers.get('x-api-key') ?? request.headers.get('authorization') ?? '';
-    const provided = header.startsWith('Bearer ') ? header.slice(7) : header;
     if (secureEquals(provided, env.API_TOKEN)) return true;
     if (fromQuery !== null && secureEquals(fromQuery, env.API_TOKEN)) return true;
   }
@@ -378,7 +507,16 @@ async function authorized(request: Request, env: Env): Promise<boolean> {
   // Browser: the signed cookie set by POST /api/login (also sent on same-origin
   // WebSocket upgrades, so the events socket needs no ?token= after signing in).
   const cookie = readCookie(request, SESSION_COOKIE);
-  return cookie ? await verifySessionToken(secret, cookie) : false;
+  if (cookie && (await verifySessionToken(secret, cookie))) return true;
+
+  // Generated `full` tokens are admin-equivalent, so scripts can rotate away from the
+  // shared API_TOKEN. Embed tokens are deliberately rejected here.
+  const candidate = [provided, fromQuery ?? ''].find(isTokenValue);
+  if (candidate) {
+    const verified = await verifyManagedToken(env, candidate);
+    return verified.ok && verified.token.kind === 'full';
+  }
+  return false;
 }
 
 function corsHeaders(): Record<string, string> {

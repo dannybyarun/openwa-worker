@@ -137,8 +137,9 @@ authoritative source (the worker has no analytics token).
 
 ### `POST /api/sessions/:id/ai`
 
-Drafts a reply (or a summary) for one chat from the stored history, using Workers AI through the
-`[ai]` binding. It never sends anything — you get text back and decide.
+Drafts a reply (or a summary) for one chat from the stored history. It never sends anything — you get
+text back and decide. The default backend is Workers AI through the `[ai]` binding; a session can
+switch to any OpenAI-compatible endpoint (see settings below).
 
 ```json
 { "chatId": "9779800000000@s.whatsapp.net", "mode": "reply", "instruction": "say I'll call tonight" }
@@ -156,8 +157,75 @@ Drafts a reply (or a summary) for one chat from the stored history, using Worker
 ```
 
 `mode` is `reply` (default) or `summary`; `instruction` is optional. It uses the last 30 stored
-messages for the chat, so a chat with no history returns `400`. `501` means the worker was deployed
-without the `[ai]` binding, `502` the model call failed. Override the model with `AI_MODEL`.
+messages for the chat, so a chat with no history returns `400`. `501` means Workers AI was selected
+but the worker was deployed without the `[ai]` binding, `502` the model call failed. Override the
+model with `AI_MODEL`, or per session with `POST /api/sessions/:id/settings`.
+
+### `GET` · `POST /api/sessions/:id/settings`
+
+Per-session automation, stored in the session's Durable Object.
+
+```json
+{
+  "id": "support-bot",
+  "settings": {
+    "ai": {
+      "provider": "workers-ai",
+      "model": "@cf/openai/gpt-oss-20b",
+      "hasApiKey": false
+    },
+    "autoReply": {
+      "enabled": true,
+      "prompt": "Reply in Nepali, two sentences max.",
+      "groups": false,
+      "cooldownSeconds": 120,
+      "dailyLimit": 20
+    }
+  },
+  "defaults": {
+    "provider": "workers-ai",
+    "aiModel": "@cf/meta/llama-4-scout-17b-16e-instruct",
+    "autoReply": { "cooldownSeconds": 120, "dailyLimit": 20, "groups": false }
+  }
+}
+```
+
+`POST` takes a partial patch and returns the merged result:
+
+```json
+{
+  "ai": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "sk-…"
+  },
+  "autoReply": { "enabled": true }
+}
+```
+
+Provider rules:
+
+- `workers-ai` — `model` must be an `@scope/name` id; empty falls back to `AI_MODEL`, then the built-in
+  default. `baseUrl`/`apiKey` are ignored (stored as null).
+- `openai` — anything that speaks `POST {baseUrl}/chat/completions` (OpenAI, Groq, OpenRouter,
+  Together, Fireworks, Ollama, LM Studio, vLLM). `baseUrl` must be `http(s)`; a full
+  `…/chat/completions` URL is accepted as-is.
+- The API key is **write-only**: `GET` returns `hasApiKey` plus `apiKeyHint` (`••••abcd`), never the
+  value. Sending `apiKey: null` (or an empty string) clears it; omitting it keeps the stored key.
+
+`ai: null` clears the block, as does `autoReply: null`. Numbers are clamped: `cooldownSeconds`
+10–3600, `dailyLimit` 1–200. Auto-reply only runs inside a connected window, never answers `fromMe`,
+status broadcasts or newsletters, skips groups unless `groups: true`, and reserves its slot before
+calling the model so a burst cannot fan out.
+
+### `GET /api/sessions/:id/media?id=<messageId>&download=1`
+
+Streams the actual bytes of one media message (image, video, audio, sticker, document). The message
+row only carries a small JPEG thumbnail; the file is downloaded from WhatsApp when this route is
+called, then returned with its `content-type` and filename. `download=1` sets
+`content-disposition: attachment`. `404` means the row was pruned from the 200-message history,
+`413` means the file is over 20 MB (tested against `fileLength` before downloading).
 
 ### `POST /api/sessions/:id/logout` · `DELETE /api/sessions/:id`
 
@@ -284,7 +352,7 @@ self-messages, protocol noise, and `@broadcast`/`@newsletter`/`@status` chats:
 
 ```ts
 interface Message {
-  id?: string;          // WhatsApp message id
+  id?: string;          // WhatsApp message id — also the media handle
   chatId: string;       // …@s.whatsapp.net, …@g.us, …
   fromMe?: boolean;
   sender?: string;      // participant/remote jid
@@ -293,5 +361,59 @@ interface Message {
   type?: string;        // conversation, extendedTextMessage, imageMessage, documentMessage, …
   text?: string;        // text or caption; '' for media without a caption
   seq?: number;         // monotonic per session — the cursor
+  preview?: {           // Open Graph card WhatsApp attached, when present
+    url: string;
+    title?: string;
+    description?: string;
+    thumbnail?: string; // small JPEG as a data URL
+  };
+  media?: {             // metadata only; bytes come from /media
+    mimetype?: string;
+    fileName?: string;
+    fileLength?: number;
+    seconds?: number;
+    width?: number;
+    height?: number;
+    ptt?: boolean;      // voice note
+    thumbnail?: string; // small JPEG as a data URL
+  };
 }
 ```
+
+## Tokens and the website widget
+
+Admin routes — every one requires the login cookie or an admin token.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/tokens` | List generated tokens (never the value, only an `owa_…` prefix) |
+| `POST /api/tokens` | Create one; the raw value is returned once |
+| `DELETE /api/tokens/:id` | Revoke |
+
+```json
+{ "kind": "embed", "label": "Website chat", "session": "support-bot",
+  "chatId": "9779800000000@s.whatsapp.net", "origins": "https://example.com", "expiresInDays": 90 }
+```
+
+`kind: "embed"` needs `session` and `chatId` and is send-only. `kind: "full"` is admin-equivalent
+and can be used anywhere `API_TOKEN` is accepted (`X-API-Key`, `Authorization: Bearer`,
+`?token=`). Either way the response is `{ "token": "owa_…", "record": { … } }`; only a SHA-256 hash
+of the value is stored, so copy it immediately.
+
+### `POST /api/embed/send` (public, token-authenticated)
+
+The endpoint behind `embed.js`. No cookie, no API key — the widget token is the credential.
+
+```json
+{ "token": "owa_…", "text": "Do you deliver to Lalitpur?" }
+```
+
+```json
+{ "ok": true, "id": "3EB0…" }
+```
+
+Restrictions: the token must be `kind: "embed"`, the request `Origin` must match its allowlist when
+one was set, the message goes to the token's own `chatId` only (a different `chatId` in the body is
+`403`), text is capped at 1000 characters, and each token gets 50 sends per UTC day (`429` after
+that). Errors are `401` invalid/expired token, `403` wrong kind/origin/chat, `429` daily limit, and
+`502` if WhatsApp refused the send.

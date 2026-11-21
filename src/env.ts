@@ -1,10 +1,13 @@
 import type { SessionRegistry } from './registry-do';
 import type { WhatsAppSession } from './session-do';
+import type { TokenStore } from './token-do';
 
 /** Bindings declared in wrangler.toml, plus secrets set via `wrangler secret put`. */
 export interface Env {
   WHATSAPP_SESSION: DurableObjectNamespace<WhatsAppSession>;
   SESSION_REGISTRY: DurableObjectNamespace<SessionRegistry>;
+  /** Generated API/embed tokens (one global instance). */
+  TOKEN_STORE: DurableObjectNamespace<TokenStore>;
   /** Static UI served from ./ui (assets binding). */
   ASSETS: Fetcher;
   /**

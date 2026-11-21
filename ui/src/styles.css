@@ -18,6 +18,7 @@
   --c-hover: #f5f6f6;
   --c-badge: #25d366;
   --c-danger: #ea4335;
+  --c-link: #027eb5;
   --c-wall: #efeae2;
   --c-wall-ink: #0b141a;
 }
@@ -37,6 +38,7 @@
   --c-hover: #202c33;
   --c-badge: #00a884;
   --c-danger: #f15c6d;
+  --c-link: #53bdeb;
   --c-wall: #0b141a;
   --c-wall-ink: #ffffff;
 }
@@ -56,6 +58,7 @@
   --color-hover: var(--c-hover);
   --color-badge: var(--c-badge);
   --color-danger: var(--c-danger);
+  --color-link: var(--c-link);
   --font-sans: "Segoe UI", "Helvetica Neue", Helvetica, Arial, "Noto Sans", sans-serif;
 }
 

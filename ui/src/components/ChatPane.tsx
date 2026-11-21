@@ -13,8 +13,7 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
-import type { SessionStatus } from '../lib/api';
-import { chatIdToNumber } from '../lib/api';
+import { chatIdToNumber, type Config, type SessionStatus } from '../lib/api';
 import type { ChatSummary } from '../lib/format';
 import { groupByDay } from '../lib/format';
 import { useToast } from './Toaster';
@@ -25,6 +24,8 @@ import { StatusDot, statusLabel } from './StatusPill';
 interface ChatPaneProps {
   status?: SessionStatus;
   sessionId: string | null;
+  /** Needed so message media can be fetched on demand. */
+  config: Config;
   chat: ChatSummary | null;
   onBack: () => void;
   onWake: () => void;
@@ -135,7 +136,7 @@ export function ChatPane(props: ChatPaneProps) {
         />
       ) : chat ? (
         <>
-          <MessageList chat={chat} />
+          <MessageList chat={chat} config={props.config} sessionId={sessionId} />
           <Composer onSend={props.onSend} sending={props.sending} onDraft={props.onDraft} />
         </>
       ) : (
@@ -145,7 +146,15 @@ export function ChatPane(props: ChatPaneProps) {
   );
 }
 
-function MessageList({ chat }: { chat: ChatSummary }) {
+function MessageList({
+  chat,
+  config,
+  sessionId,
+}: {
+  chat: ChatSummary;
+  config: Config;
+  sessionId: string | null;
+}) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const count = chat.messages.length;
 
@@ -179,6 +188,8 @@ function MessageList({ chat }: { chat: ChatSummary }) {
                 message={message}
                 tail={tail}
                 showSender={chat.chatId.endsWith('@g.us')}
+                config={config}
+                sessionId={sessionId}
               />
             );
           })}

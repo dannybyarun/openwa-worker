@@ -49,8 +49,23 @@ the two workerd quirks the transport patch compensates for.
 - **Free-plan monitor** — **Free plan usage** in the app (or `GET /api/usage`) totals the wake
   counters, estimates Durable Object GB-s for the day, projects it against the 13,000 GB-s free
   allowance, and warns before you get close.
-- **Draft with AI** — the ✨ button in a chat asks Workers AI (the `[ai]` binding) for a reply
-  drafted from that thread. It fills the composer; nothing is ever sent for you.
+- **Draft with AI** — the ✨ button in a chat drafts a reply from that thread. It fills the composer;
+  nothing is ever sent for you. The model is Workers AI by default, or any OpenAI-compatible endpoint
+  you configure per session.
+- **AI models & auto-reply per session** — pick the Workers AI model in Settings, or point the session
+  at any OpenAI-compatible endpoint (`/chat/completions`) such as OpenAI, Groq, OpenRouter, Together,
+  or a local Ollama/LM Studio — base URL, model name and key all set in the UI. Add extra
+  instructions and optionally let the session answer incoming messages. Auto-reply is off by
+  default, skips your own messages and groups (unless enabled), and is rate-limited per chat
+  (cooldown plus a daily cap).
+- **Links and media** — URLs in a message are clickable, and WhatsApp's own Open Graph card
+  (title, description, thumbnail) is shown when present. Photos, video, voice notes, stickers and
+  documents render a thumbnail with one-click open/download; the full file is fetched from
+  WhatsApp on demand instead of bloating storage.
+- **Embeddable website widget** — mint a token in Settings → Website widget and drop one `<script>`
+  tag on any site for a "chat with us" bubble. Widget tokens are **send-only**: pinned to one
+  account and one chat, origin-allowlisted if you want, capped at 50 messages/day, and they cannot
+  read conversations. Generated `full` tokens work like `API_TOKEN` for scripts and can be revoked.
 - **Token auth for scripts** — `API_TOKEN` also works as a bearer token (`X-API-Key`,
   `Authorization: Bearer`, or `?token=` for the events socket) for Apps Script and other clients.
 
@@ -66,6 +81,25 @@ the two workerd quirks the transport patch compensates for.
 
 > Captured from the built UI with a stubbed API, so the conversations above are samples, not a
 > real account. The UI itself is the code in [`ui/`](ui/).
+
+## Embed on your site
+
+Deploy the worker, open **Settings → Website widget**, pick a project-wide chat, and copy the
+snippet:
+
+```html
+<script src="https://your-worker.example.com/embed.js"
+        data-token="owa_…"
+        data-title="Chat with us"
+        async></script>
+```
+
+Optional attributes: `data-greeting`, `data-accent="#00a884"`, `data-theme="dark"`,
+`data-position="left"`, `data-worker` (if the script is served from a different origin).
+
+The token is send-only and bound to that one chat. Add allowed origins to stop other sites from
+using it, and revoke it from the same panel at any time. `POST /api/embed/send` is the bare API if
+you would rather build your own form.
 
 ## Cost
 
@@ -144,7 +178,7 @@ npm run dev:ui                     # Vite on :5173, proxies /api and /health to 
 Checks:
 
 ```bash
-npm test          # patch, auth, and cursor specs, no network
+npm test          # patch, auth, cursor, settings and token specs, no network
 npm run typecheck  # worker + UI
 ```
 
