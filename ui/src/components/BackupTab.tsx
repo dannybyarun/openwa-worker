@@ -138,13 +138,13 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
           })),
         };
         saveFile(
-          `openwa-${id}-chats-${stamp()}.json`,
+          `whatsflare-${id}-chats-${stamp()}.json`,
           JSON.stringify(payload, null, 2),
           'application/json',
         );
       } else {
         const lines: string[] = [
-          `OpenWA chat export — session ${id}`,
+          `WhatsFlare chat export — session ${id}`,
           `Exported ${exportedAt}`,
           '',
         ];
@@ -159,7 +159,7 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
           }
           lines.push('');
         }
-        saveFile(`openwa-${id}-chats-${stamp()}.txt`, lines.join('\n'), 'text/plain');
+        saveFile(`whatsflare-${id}-chats-${stamp()}.txt`, lines.join('\n'), 'text/plain');
       }
       toast.notify(
         `Exported ${chats.length} chat${chats.length === 1 ? '' : 's'} as ${format.toUpperCase()}.`,
@@ -198,7 +198,7 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
         })),
       };
       saveFile(
-        `openwa-${sessionId}-settings-${stamp()}.json`,
+        `whatsflare-${sessionId}-settings-${stamp()}.json`,
         JSON.stringify(payload, null, 2),
         'application/json',
       );
@@ -216,7 +216,7 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
     try {
       const backup = await readJson<SettingsBackup>(file);
       if (backup.kind !== 'openwa-settings-backup' || !backup.settings) {
-        throw new Error('That is not an OpenWA settings backup.');
+        throw new Error('That is not an WhatsFlare settings backup.');
       }
       const ai = backup.settings.ai;
       const patch: SessionSettingsPatch = {
@@ -286,7 +286,7 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
     try {
       const backup = await api.authExport(config, sessionId);
       saveFile(
-        `openwa-${sessionId}-credentials-${stamp()}.json`,
+        `whatsflare-${sessionId}-credentials-${stamp()}.json`,
         JSON.stringify(backup, null, 2),
         'application/json',
       );
@@ -308,7 +308,7 @@ export function BackupTab({ config, sessionId, status }: BackupTabProps) {
     try {
       const backup = await readJson<AuthBackup>(file);
       if (backup.kind !== 'openwa-auth-backup' || !backup.entries) {
-        throw new Error('That is not an OpenWA credential backup.');
+        throw new Error('That is not an WhatsFlare credential backup.');
       }
       const result = await api.authImport(config, sessionId, backup.entries);
       toast.notify(

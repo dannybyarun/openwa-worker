@@ -18,7 +18,7 @@ import {
   publicToken,
 } from '../src/tokens.ts';
 
-test('newTokenValue looks like an OpenWA token and is unique', () => {
+test('newTokenValue looks like an WhatsFlare token and is unique', () => {
   const first = newTokenValue();
   const second = newTokenValue();
   assert.equal(isTokenValue(first), true);

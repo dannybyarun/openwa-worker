@@ -71,9 +71,9 @@ One-shot drains (recommended — no long-running process to babysit):
 
 ```cron
 # every 2 minutes
-*/2 * * * * cd /srv/openwa/examples/outbox-cron && \
+*/2 * * * * cd /srv/whatsflare/examples/outbox-cron && \
   OPENWA_URL=https://wa.example.com OPENWA_TOKEN=owa_… \
-  node run.mjs >> /var/log/openwa-outbox.log 2>&1
+  node run.mjs >> /var/log/whatsflare-outbox.log 2>&1
 ```
 
 Windows Task Scheduler: action `node`, arguments `run.mjs` (or `--watch 60`), "Start in" the

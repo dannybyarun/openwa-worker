@@ -203,7 +203,7 @@ drained on another. `sent` rows are excluded by default (`--status` narrows furt
 
 The Apps Script in [`apps-script/`](../apps-script/) wakes a session, drains new messages into a
 sheet, acks, sends the Outbox rows and idles again. It is configured entirely from Script Properties
-— run **OpenWA → Setup…** in the sheet once:
+— run **WhatsFlare → Setup…** in the sheet once:
 
 | Property | Meaning |
 | --- | --- |

@@ -34,7 +34,7 @@ These do not add a binding, a bill, or an always-on process.
    `buildChats` already has the rows; a client-side filter over text, chat name and sender is
    enough for the 200-message window. Label it honestly ("recent messages") until the archive lands.
 4. **Webhook hardening** (S, free).
-   Sign the payload with HMAC-SHA256 (`X-OpenWA-Signature`, secret from an env var), add a 3-attempt
+   Sign the payload with HMAC-SHA256 (`X-WhatsFlare-Signature`, secret from an env var), add a 3-attempt
    retry with backoff inside the active window, and keep a small ring buffer of the last 20
    deliveries per session (`webhookLog`) so the Admin tab can show success/failure instead of
    silence.

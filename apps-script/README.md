@@ -17,7 +17,7 @@ Google Sheet trigger (every N min)
 
 1. Create a Google Sheet, then **Extensions → Apps Script**.
 2. Replace `Code.gs` with [`Code.gs`](./Code.gs) and save.
-3. Reload the sheet. A **OpenWA** menu appears; choose **Setup…**. It prompts for:
+3. Reload the sheet. A **WhatsFlare** menu appears; choose **Setup…**. It prompts for:
    - **Worker URL** — your deployed worker origin, no trailing slash.
    - **API token** — the `API_TOKEN` / UI password (blank when the worker has none).
    - **Session(s)** — comma-separated names created in the worker.
@@ -26,14 +26,14 @@ Google Sheet trigger (every N min)
    Setup stores these in **Script Properties** (`OPENWA_URL`, `OPENWA_TOKEN`, `OPENWA_SESSIONS`,
    `OPENWA_POLL_MINUTES`), creates the `Inbox` and `Outbox` tabs, installs the trigger and runs a
    connection check. Re-run it whenever the worker or session changes.
-4. Run **OpenWA → Test connection** to confirm the URL, token and session before walking away.
+4. Run **WhatsFlare → Test connection** to confirm the URL, token and session before walking away.
 5. Send yourself a test message; it should appear in `Inbox` within one cycle.
 
 The same keys can be set by hand in **Project Settings → Script properties**, which is useful when
 you deploy the script from `clasp` instead of the editor. Properties always beat the fallback
 `CONFIG` object at the top of the file.
 
-The **OpenWA** menu also gives you *Drain now*, *Queue a message…* (writes a pending `Outbox` row),
+The **WhatsFlare** menu also gives you *Drain now*, *Queue a message…* (writes a pending `Outbox` row),
 *Install/replace trigger*, and *Export XLSX*. `enqueueMessage(session, chatId, body)` is callable from
 any other Apps Script in the same project.
 

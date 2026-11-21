@@ -1,3 +1,5 @@
+# The deployed Worker name. Kept as `openwa-worker` so existing workers,
+# workers.dev URLs and custom domains keep working across the project rename.
 name = "openwa-worker"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"

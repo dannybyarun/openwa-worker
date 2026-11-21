@@ -61,7 +61,7 @@ export function LoginScreen({ config, onConfig, onSignedIn, unreachable }: Login
         <div className="flex items-center gap-3">
           <img src="/logo.svg" alt="" width={46} height={46} className="rounded-xl shadow-sm" />
           <div>
-            <h1 className="text-[19px] font-semibold text-ink">Sign in to OpenWA</h1>
+            <h1 className="text-[19px] font-semibold text-ink">Sign in to WhatsFlare</h1>
             <p className="text-[12.5px] text-muted">This gateway is password protected.</p>
           </div>
         </div>
@@ -134,7 +134,7 @@ export function LoginScreen({ config, onConfig, onSignedIn, unreachable }: Login
                 id="login-worker-url"
                 value={base}
                 onChange={event => setBase(event.target.value)}
-                placeholder="https://openwa-worker.example.workers.dev"
+                placeholder="https://whatsflare.example.workers.dev"
                 className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
               />
               <div className="mt-2 flex items-center justify-between gap-2">

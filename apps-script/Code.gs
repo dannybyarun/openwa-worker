@@ -1,11 +1,11 @@
 /**
- * OpenWA Worker → Google Sheets drainer.
+ * WhatsFlare Worker → Google Sheets drainer.
  *
  * The gateway holds no socket in lazy mode. This script is the "always-on" half:
  * a time-driven trigger wakes each session for a few seconds, pulls new messages with a cursor,
  * writes them to the Inbox sheet, acks the cursor, flushes the Outbox sheet, then closes the socket.
  *
- * Configuration lives in Script Properties, not in this file: run `setup()` from the OpenWA menu
+ * Configuration lives in Script Properties, not in this file: run `setup()` from the WhatsFlare menu
  * (or Project Settings → Script properties) once. The CONFIG object below is only a fallback for
  * older deployments that edited the file directly; properties always win.
  *
@@ -73,10 +73,10 @@ function config_() {
     OUTBOX_SHEET: read('OPENWA_OUTBOX_SHEET', CONFIG.OUTBOX_SHEET),
   };
   if (!cfg.WORKER_URL) {
-    throw new Error('OPENWA_URL is not set — run OpenWA → Setup in the sheet menu.');
+    throw new Error('OPENWA_URL is not set — run WhatsFlare → Setup in the sheet menu.');
   }
   if (cfg.SESSIONS.length === 0) {
-    throw new Error('OPENWA_SESSION is not set — run OpenWA → Setup in the sheet menu.');
+    throw new Error('OPENWA_SESSION is not set — run WhatsFlare → Setup in the sheet menu.');
   }
   CONFIG_CACHE_ = cfg;
   return cfg;
@@ -144,7 +144,7 @@ function setup() {
   setupSheets_();
   installTrigger();
   const report = testConnection();
-  ui.alert('OpenWA is configured.\n\n' + report);
+  ui.alert('WhatsFlare is configured.\n\n' + report);
   return report;
 }
 
@@ -193,7 +193,7 @@ function testConnection() {
 /** Optional spreadsheet menu (this script must be bound to the ledger sheet). */
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('OpenWA')
+    .createMenu('WhatsFlare')
     .addItem('Setup…', 'setup')
     .addItem('Drain now', 'drainAll')
     .addItem('Test connection', 'testConnection')
@@ -498,7 +498,7 @@ function exportXlsx() {
   const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmm');
   const blob = DriveApp.getFileById(ss.getId())
     .getAs('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    .setName('openwa-ledger-' + stamp + '.xlsx');
+    .setName('whatsflare-ledger-' + stamp + '.xlsx');
   const file = DriveApp.createFile(blob);
   console.log('exported ' + file.getUrl());
   return file.getUrl();

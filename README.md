@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="ui/public/logo.svg" alt="OpenWA" width="88" height="88" />
+  <img src="ui/public/logo.svg" alt="WhatsFlare" width="88" height="88" />
 </p>
 
-<h1 align="center">OpenWA Worker</h1>
+<h1 align="center">WhatsFlare</h1>
 
 <p align="center">
   A WhatsApp gateway for Cloudflare Workers — link a device with a QR code, read chats, and send
@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/dannybyarun/openwa-worker">
+  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/dannybyarun/whatsflare">
     <img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" />
   </a>
-  <a href="https://github.com/dannybyarun/openwa-worker/actions/workflows/ci.yml">
-    <img src="https://github.com/dannybyarun/openwa-worker/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <a href="https://github.com/dannybyarun/whatsflare/actions/workflows/ci.yml">
+    <img src="https://github.com/dannybyarun/whatsflare/actions/workflows/ci.yml/badge.svg" alt="CI" />
   </a>
 </p>
 
@@ -211,7 +211,7 @@ Full guide, including custom domains and optional tuning: [`docs/deployment.md`]
 Paste this into an agent with terminal access (Claude Code, Codex, Cursor, …):
 
 ```text
-Deploy OpenWA Worker from https://github.com/dannybyarun/openwa-worker to my Cloudflare account.
+Deploy WhatsFlare from https://github.com/dannybyarun/whatsflare to my Cloudflare account.
 
 1. Read README.md, docs/deployment.md and wrangler.toml first.
 2. Ask me for a strong password using a secret input. Never print it or put it in a command

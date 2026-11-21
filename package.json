@@ -1,5 +1,5 @@
 {
-  "name": "openwa-worker",
+  "name": "whatsflare",
   "version": "0.1.0",
   "private": true,
   "description": "WhatsApp gateway for Cloudflare Workers — baileys in a Durable Object, a REST + WebSocket API, and a WhatsApp Web-style UI.",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/dannybyarun/openwa-worker.git"
+    "url": "https://github.com/dannybyarun/whatsflare.git"
   },
   "cloudflare": {
     "bindings": {

@@ -225,7 +225,7 @@ export function App() {
     }
   };
 
-  const accountName = status?.me?.name || sessionId || 'OpenWA';
+  const accountName = status?.me?.name || sessionId || 'WhatsFlare';
   // A 401 means the worker answered but rejected the request; anything else is a
   // transport problem. Telling them apart saves a lot of "is it down?" guessing.
   const unauthorized = (sessionsQuery.error as { status?: number } | null)?.status === 401;
@@ -270,7 +270,7 @@ export function App() {
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-app">
       <nav className="hidden w-16 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel-2 py-4 lg:flex">
-        <img src="/logo.svg" alt="OpenWA" width={34} height={34} className="mb-4 rounded-lg" />
+        <img src="/logo.svg" alt="WhatsFlare" width={34} height={34} className="mb-4 rounded-lg" />
         <RailButton label="Chats" active onClick={() => setMobileChat(false)}>
           <MessageCircle size={22} />
         </RailButton>
@@ -456,7 +456,7 @@ function FirstRun({
   return (
     <div className="wallpaper flex h-full w-full flex-col items-center justify-center px-8 text-center">
       <img src="/logo.svg" alt="" width={96} height={96} className="mb-5 rounded-2xl shadow-lg" />
-      <h1 className="text-[30px] font-light text-ink">OpenWA for Cloudflare Workers</h1>
+      <h1 className="text-[30px] font-light text-ink">WhatsFlare for Cloudflare Workers</h1>
       <p className="mt-2 max-w-md text-[13.5px] leading-6 text-muted">
         A WhatsApp gateway that sleeps when idle. Create a session, link your phone, and this page
         becomes a WhatsApp Web client for it.

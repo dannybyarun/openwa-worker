@@ -1,6 +1,6 @@
 # Deployment and configuration
 
-OpenWA Worker needs no databases, buckets, queues, or KV namespaces. The two Durable Object classes
+WhatsFlare Worker needs no databases, buckets, queues, or KV namespaces. The two Durable Object classes
 are declared in `wrangler.toml`, so a fresh deploy creates everything it needs.
 
 ## Contents
@@ -17,7 +17,7 @@ are declared in `wrangler.toml`, so a fresh deploy creates everything it needs.
 
 ## One-click deploy
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/dannybyarun/openwa-worker)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/dannybyarun/whatsflare)
 
 The button clones the repo into a new Worker, runs `npm ci` (which patches baileys) and
 `npm run build`, then deploys. Keep the worker name `openwa-worker` unless you also update any
@@ -40,8 +40,8 @@ npx wrangler secret put UI_PASSWORD --name openwa-worker
 ## Deploy with Wrangler
 
 ```bash
-git clone https://github.com/dannybyarun/openwa-worker
-cd openwa-worker
+git clone https://github.com/dannybyarun/whatsflare
+cd whatsflare
 npm ci
 npx wrangler login
 npm run deploy                 # vite build → ui/dist, then wrangler deploy
@@ -60,7 +60,7 @@ To run locally: `npm run dev` (see the README for the two-process UI workflow).
 Paste into an agent that has terminal access:
 
 ```text
-Deploy OpenWA Worker from https://github.com/dannybyarun/openwa-worker to my Cloudflare account.
+Deploy WhatsFlare from https://github.com/dannybyarun/whatsflare to my Cloudflare account.
 
 1. Read README.md, docs/deployment.md and wrangler.toml first.
 2. Ask me for a strong password using a secret input. Never print it, commit it, or pass it as a

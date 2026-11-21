@@ -186,7 +186,7 @@ export function SettingsDialog({
                   id="worker-url"
                   value={base}
                   onChange={event => setBase(event.target.value)}
-                  placeholder="https://openwa-worker.example.workers.dev"
+                  placeholder="https://whatsflare.example.workers.dev"
                   className="mt-1.5 w-full rounded-lg bg-panel-2 px-3 py-2 text-[13.5px] text-ink outline-none ring-1 ring-transparent focus:ring-accent/60"
                 />
                 <p className="mt-1 text-[11.5px] text-muted">

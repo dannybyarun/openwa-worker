@@ -1,5 +1,5 @@
 /**
- * OpenWA website widget.
+ * WhatsFlare website widget.
  *
  * Drop this on any site:
  *
@@ -8,7 +8,7 @@
  *           data-title="Chat with us"
  *           async></script>
  *
- * The token is created in the OpenWA UI (Settings → Website widget) and is pinned to one
+ * The token is created in the WhatsFlare UI (Settings → Website widget) and is pinned to one
  * WhatsApp chat. It can only send — it cannot read your conversations — and is rate-limited
  * by the worker. Everything lives in a shadow root so the host page's CSS cannot break it.
  */
@@ -22,7 +22,7 @@
 
   var token = script.getAttribute('data-token');
   if (!token) {
-    console.warn('[openwa] embed.js needs a data-token attribute');
+    console.warn('[whatsflare] embed.js needs a data-token attribute');
     return;
   }
 
@@ -86,7 +86,7 @@
     '<div class="body" aria-live="polite"></div>',
     '<form class="form"><textarea rows="1" maxlength="' + maxLength + '" placeholder="Type a message…" aria-label="Message"></textarea>',
     '<button class="send" type="submit">Send</button></form>',
-    '<div class="foot">Powered by OpenWA · replies arrive on WhatsApp</div>',
+    '<div class="foot">Powered by WhatsFlare · replies arrive on WhatsApp</div>',
     '</div>',
   ].join('');
 

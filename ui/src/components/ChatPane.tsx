@@ -95,7 +95,7 @@ export function ChatPane(props: ChatPaneProps) {
         ) : (
           <>
             <Avatar
-              name={status?.me?.name || sessionId || 'OpenWA'}
+              name={status?.me?.name || sessionId || 'WhatsFlare'}
               seed={sessionId ?? ''}
               size={40}
               jid={status?.me?.id ? jidKey(status.me.id) : undefined}
@@ -106,7 +106,7 @@ export function ChatPane(props: ChatPaneProps) {
             />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[15px] font-semibold text-ink">
-                {status?.me?.name || sessionId || 'OpenWA'}
+                {status?.me?.name || sessionId || 'WhatsFlare'}
               </div>
               <div className="text-[12px] text-muted">
                 {unpaired ? 'Device not linked' : 'WhatsApp gateway'}
@@ -334,7 +334,7 @@ function EmptyThread({ status, onNewChat }: { status?: SessionStatus; onNewChat:
   return (
     <div className="wallpaper flex min-h-0 flex-1 flex-col items-center justify-center px-8 py-10 text-center">
       <img src="/logo.svg" alt="" width={92} height={92} className="mb-5 rounded-2xl shadow-lg" />
-      <h2 className="text-[28px] font-light text-ink">OpenWA Web</h2>
+      <h2 className="text-[28px] font-light text-ink">WhatsFlare Web</h2>
       <p className="mt-2 max-w-md text-[13.5px] text-muted">
         Send and receive messages without keeping your phone online. Your session runs in a Cloudflare
         Durable Object — the socket only opens for short windows.
