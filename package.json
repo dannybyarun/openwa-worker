@@ -45,7 +45,7 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
-    "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js scripts/auth.spec.mjs scripts/cursor.spec.mjs scripts/settings.spec.mjs scripts/tokens.spec.mjs scripts/outbox.spec.mjs scripts/mcp.spec.mjs"
+    "test": "node --test scripts/patch-baileys-worker-socket.spec.js scripts/patch-baileys-link-preview.spec.js scripts/auth.spec.mjs scripts/cursor.spec.mjs scripts/settings.spec.mjs scripts/tokens.spec.mjs scripts/outbox.spec.mjs scripts/mcp.spec.mjs scripts/window.spec.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.3.1",

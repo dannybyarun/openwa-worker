@@ -37,6 +37,12 @@ export interface Env {
    */
   IDLE_TTL_MS?: string;
   /**
+   * Ceiling for how far activity can slide one /wake window, in ms. Default 300000 (5 min, max 30 min).
+   * A drain that keeps pulling pushes the close time out, but never past this — the alternative to a
+   * flat window is a sliding one, and the cap is what stops a chatty puller pinning the DO.
+   */
+  WAKE_WINDOW_MAX_MS?: string;
+  /**
    * Max connects per session per UTC day. Default 300 (≈5-min polling with slack). 0 disables.
    * Guards the free plan against a runaway reconnect loop before the 00:00 UTC reset.
    */

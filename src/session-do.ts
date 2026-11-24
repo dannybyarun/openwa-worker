@@ -17,6 +17,7 @@ import { DurableObjectAuthState } from './auth-state';
 import { createWorkerLogger } from './logger';
 import { error, json } from './http';
 import { normalizeSequences, pruneAcked, selectMessages, type StoredMessage } from './messages';
+import { slideWindow } from './window';
 import {
   DEFAULT_AUTO_REPLY_COOLDOWN,
   DEFAULT_AUTO_REPLY_DAILY,
@@ -40,6 +41,8 @@ protobuf.Writer.create = function createWriter() {
 };
 
 const DEFAULT_IDLE_TTL_MS = 60_000; // connected window per wake; the /idle route closes sooner
+const DEFAULT_WAKE_WINDOW_MAX_MS = 5 * 60_000; // ceiling for sliding one window when pulls keep coming
+const MAX_WAKE_WINDOW_MAX_MS = 30 * 60_000;
 const PAIRING_TTL_MULTIPLIER = 5; // Start gets a longer window so the QR can be scanned
 const DEFAULT_DAILY_WAKE_LIMIT = 300; // ~288 polls/day at 5-min cadence; 0 disables the cap
 const DEFAULT_WAIT_MS = 15_000;
@@ -470,6 +473,8 @@ export class WhatsAppSession extends DurableObject<Env> {
   private intentionalClose = false;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private activeUntil = 0;
+  /** When the current connected window opened. Sliding never moves past `windowStart + wakeWindowMaxMs`. */
+  private windowStart = 0;
   private cachedVersion?: [number, number, number];
   private statusCache?: SessionStatus;
   private historyBuf?: StoredMessage[];
@@ -568,6 +573,7 @@ export class WhatsAppSession extends DurableObject<Env> {
           id: this.ctx.id.name,
           status: (await this.getStatus()).status,
           idleTtlMs: this.idleTtlMs,
+          wakeWindowMaxMs: this.wakeWindowMaxMs,
           wakes: {
             used: budget.used,
             limit: budget.limit,
@@ -581,7 +587,7 @@ export class WhatsAppSession extends DurableObject<Env> {
         const wait = clampWait(url.searchParams.get('wait'));
         const budget = await this.bumpWake(!this.sock?.ws.isOpen);
         if (!budget.allowed) return this.wakeLimitError(budget);
-        await this.activate();
+        await this.activate(this.idleTtlMs, { fresh: true });
         await this.markConnecting();
         await this.ensureConnected();
         if (wait > 0) await this.waitForOpen(wait);
@@ -592,7 +598,13 @@ export class WhatsAppSession extends DurableObject<Env> {
         const after = Math.max(0, Math.floor(Number(url.searchParams.get('after')) || 0));
         const limitRaw = Math.floor(Number(url.searchParams.get('limit')) || DEFAULT_MESSAGE_LIMIT);
         const limit = Math.min(Math.max(limitRaw, 1), MAX_MESSAGE_LIMIT);
-        return json(await this.listMessages(after, limit));
+        const page = await this.listMessages(after, limit);
+        // A drain that is still pulling keeps the socket alive (capped by WAKE_WINDOW_MAX_MS), so a
+        // burst longer than one window is not cut in half. A pull can only *extend* a live window,
+        // never open one — opening is /wake's job, so a client that keeps polling cannot quietly
+        // turn a wake into an always-on session.
+        if (this.sock?.ws.isOpen && Date.now() < this.activeUntil) await this.activate();
+        return json(page);
       }
       if (request.method === 'POST' && action === 'ack') {
         const body = (await request.json().catch(() => null)) as { upto?: number; close?: boolean } | null;
@@ -616,7 +628,9 @@ export class WhatsAppSession extends DurableObject<Env> {
         if (!budget.allowed) return this.wakeLimitError(budget);
         const status = await this.getStatus();
         const pairing = status.status !== 'connected';
-        await this.activate(pairing ? this.idleTtlMs * PAIRING_TTL_MULTIPLIER : this.idleTtlMs);
+        await this.activate(pairing ? this.idleTtlMs * PAIRING_TTL_MULTIPLIER : this.idleTtlMs, {
+          fresh: true,
+        });
         await this.markConnecting();
         await this.ensureConnected();
         return json({ id: this.ctx.id.name, ...(await this.getStatus()), wake: budget });
@@ -769,6 +783,14 @@ export class WhatsAppSession extends DurableObject<Env> {
     return Math.min(Math.floor(raw), 15 * 60_000);
   }
 
+  /** Hard ceiling for one window, so sliding activity cannot turn a wake into an always-on session. */
+  private get wakeWindowMaxMs(): number {
+    const raw = Number(this.env.WAKE_WINDOW_MAX_MS);
+    const ttl = this.idleTtlMs;
+    if (!Number.isFinite(raw) || raw <= 0) return Math.max(ttl, DEFAULT_WAKE_WINDOW_MAX_MS);
+    return Math.max(ttl, Math.min(Math.floor(raw), MAX_WAKE_WINDOW_MAX_MS));
+  }
+
   private get dailyWakeLimit(): number {
     const raw = Number(this.env.DAILY_WAKE_LIMIT);
     if (!Number.isFinite(raw) || raw < 0) return DEFAULT_DAILY_WAKE_LIMIT;
@@ -786,22 +808,37 @@ export class WhatsAppSession extends DurableObject<Env> {
   }
 
   /**
-   * Arm (or extend) the connected window. This is the only thing that keeps the socket alive:
-   * a wake/start/send sets a timer, and when it fires the DO closes the socket and goes idle.
+   * Arm or slide the connected window. This is the only thing that keeps the socket alive: a
+   * wake/start/send arms a timer, and when it fires the DO closes the socket and goes idle.
    * There is no recurring alarm and no reconnect outside an active window — that is what keeps
    * free-tier Duration (13,000 GB-s/day) in reach for several sessions.
+   *
+   * Sliding, not flat: a pull arriving inside a live window pushes the close time out by `ttlMs`,
+   * but never past `windowStart + wakeWindowMaxMs`. A drain that takes 90 s therefore finishes
+   * instead of being cut off mid-burst, while a puller on a tight loop still cannot pin the object
+   * for the day. An expired or absent window starts a fresh one (and a fresh cap).
    */
-  private async activate(ttlMs = this.idleTtlMs): Promise<void> {
-    this.activeUntil = Date.now() + ttlMs;
+  private async activate(ttlMs = this.idleTtlMs, opts: { fresh?: boolean } = {}): Promise<void> {
+    const next = slideWindow({
+      now: Date.now(),
+      windowStart: this.windowStart,
+      activeUntil: this.activeUntil,
+      ttlMs,
+      maxMs: this.wakeWindowMaxMs,
+      fresh: opts.fresh,
+    });
+    this.windowStart = next.windowStart;
+    this.activeUntil = next.activeUntil;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       void this.goIdle().catch(() => {});
-    }, ttlMs);
+    }, next.delayMs);
   }
 
   /** Close the socket and park the session. Safe to call when already idle. */
   private async goIdle(): Promise<void> {
     this.activeUntil = 0;
+    this.windowStart = 0;
     this.connected = false;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);

@@ -83,7 +83,8 @@ Set production values with `wrangler secret put NAME`; put local values in `.dev
 | `UI_PASSWORD` | recommended | falls back to `API_TOKEN` | Browser login password. Rotating it signs every browser out. |
 | `SESSION_TTL_HOURS` | no | `168` | Browser login lifetime in hours (max 720). |
 | `API_TOKEN` | recommended | unset = open | Bearer token for REST (`X-API-Key`, `Authorization: Bearer`), the events socket (`?token=`), and the login password when `UI_PASSWORD` is unset. |
-| `IDLE_TTL_MS` | no | `60000` | How long a wake keeps the socket open (clamped 5 s – 15 min). |
+| `IDLE_TTL_MS` | no | `60000` | How long a wake keeps the socket open (clamped 5 s - 15 min). |
+| `WAKE_WINDOW_MAX_MS` | no | `300000` | Ceiling for sliding that window on continued pulls (clamped to at least `IDLE_TTL_MS`, max 30 min). |
 | `DAILY_WAKE_LIMIT` | no | `300` | Connects per session per UTC day; `0` disables the cap. |
 | `AI_MODEL` | no | `@cf/meta/llama-4-scout-17b-16e-instruct` | Workers AI model used by **Draft with AI** (`POST /api/sessions/:id/ai`). |
 | `INBOUND_WEBHOOK_URL` | no | unset | POST inbound messages here as JSON. |

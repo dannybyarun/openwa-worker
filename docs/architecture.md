@@ -32,6 +32,12 @@ The contract is `/wake → /messages → /ack → /idle`:
 3. It persists the rows, then calls `POST /ack { upto, close: true }`.
 4. The session goes idle and the socket closes.
 
+The window slides while work keeps arriving: a pull taken while the socket is open pushes the close
+time out by another `IDLE_TTL_MS`, so a burst longer than 60 s is not cut in half. Sliding stops at
+`windowStart + WAKE_WINDOW_MAX_MS` (default 5 min, max 30 min) — without that cap, a puller on a
+tight loop would turn a wake into an always-on session. An expired window starts a fresh one with a
+fresh cap, and `/idle` always closes immediately.
+
 `/start` and `/send-text` also open a window. Nothing reconnects outside one: there is no recurring
 alarm, and `alarm()` only deletes a leftover alarm from older deployments.
 
