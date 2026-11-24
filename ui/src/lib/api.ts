@@ -49,6 +49,7 @@ export interface UsageSession {
   id: string;
   status: string;
   idleTtlMs: number;
+  wakeWindowMaxMs?: number;
   wakes: { used: number; limit: number; remaining: number; limited: boolean };
 }
 
@@ -58,11 +59,13 @@ export interface UsageReport {
   estimate: {
     wakes: number;
     perWakeGbSeconds: number;
+    perWakeCeilingGbSeconds?: number;
     doGbSeconds: number;
     projectedDoGbSeconds: number;
     doPercentOfFree: number;
   };
   idleTtlMs: number;
+  wakeWindowMaxMs?: number;
   sessions: UsageSession[];
   warnings: string[];
   note: string;

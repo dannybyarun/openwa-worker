@@ -334,6 +334,8 @@ interface SessionUsage {
   status: string;
   idleTtlMs: number;
   wakes: { used: number; limit: number; remaining: number; limited: boolean };
+  /** Ceiling for sliding one window on continued pulls; defaults to the idle window. */
+  wakeWindowMaxMs?: number;
 }
 
 /**
@@ -357,6 +359,8 @@ async function usageReport(env: Env): Promise<Response> {
           id: name,
           status: typeof data.status === 'string' ? data.status : 'unknown',
           idleTtlMs: Number(data.idleTtlMs) > 0 ? Number(data.idleTtlMs) : 60_000,
+          wakeWindowMaxMs:
+            Number(data.wakeWindowMaxMs) > 0 ? Number(data.wakeWindowMaxMs) : 5 * 60_000,
           wakes: {
             used: Math.max(0, Number(data.wakes?.used) || 0),
             limit: Math.max(0, Number(data.wakes?.limit) || 0),
@@ -369,6 +373,7 @@ async function usageReport(env: Env): Promise<Response> {
           id: name,
           status: 'unknown',
           idleTtlMs: 60_000,
+          wakeWindowMaxMs: 5 * 60_000,
           wakes: { used: 0, limit: 0, remaining: 0, limited: false },
         };
       }
@@ -376,7 +381,10 @@ async function usageReport(env: Env): Promise<Response> {
   );
 
   const idleTtlMs = sessions[0]?.idleTtlMs ?? 60_000;
+  const wakeWindowMaxMs = sessions[0]?.wakeWindowMaxMs ?? 5 * 60_000;
   const perWakeGbSeconds = (idleTtlMs / 1000) * DO_MEMORY_GB;
+  // A drain that keeps pulling slides one window, so the ceiling per wake is the cap, not the ttl.
+  const perWakeCeilingGbSeconds = (wakeWindowMaxMs / 1000) * DO_MEMORY_GB;
   const wakes = sessions.reduce((sum, session) => sum + session.wakes.used, 0);
   const doGbSeconds = Math.round(wakes * perWakeGbSeconds * 10) / 10;
 
@@ -409,14 +417,19 @@ async function usageReport(env: Env): Promise<Response> {
     estimate: {
       wakes,
       perWakeGbSeconds: Math.round(perWakeGbSeconds * 100) / 100,
+      perWakeCeilingGbSeconds: Math.round(perWakeCeilingGbSeconds * 100) / 100,
       doGbSeconds,
       projectedDoGbSeconds,
       doPercentOfFree: Math.round((projectedDoGbSeconds / FREE_DO_GB_SECONDS) * 100),
     },
     idleTtlMs,
+    wakeWindowMaxMs,
     sessions,
     warnings,
-    note: "Estimated from this worker's own wake counters. Cloudflare's dashboard has the billed numbers.",
+    note:
+      "Estimated from this worker's own wake counters. Cloudflare's dashboard has the billed numbers. " +
+      "perWakeGbSeconds assumes every window closes after one IDLE_TTL_MS; perWakeCeilingGbSeconds is " +
+      "what one wake costs if the drain keeps pulling up to WAKE_WINDOW_MAX_MS.",
   });
 }
 

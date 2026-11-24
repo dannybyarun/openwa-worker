@@ -123,19 +123,21 @@ can be resolved per chat with `/avatar` below.
 
 Free-plan guard rail, no Cloudflare API token needed. It asks every session for its own counters and
 estimates Durable Object duration as `wakes × IDLE_TTL_MS × 128 MB`, which is the shape Cloudflare
-bills:
+bills. Because a drain that keeps pulling slides one window, the report also carries the ceiling for a
+single wake (`perWakeCeilingGbSeconds`, using `WAKE_WINDOW_MAX_MS`):
 
 ```json
 {
   "date": "2026-01-01",
   "freeTier": { "durableObjectGbSecondsPerDay": 13000, "requestsPerDay": 100000 },
   "estimate": {
-    "wakes": 84, "perWakeGbSeconds": 7.68,
+    "wakes": 84, "perWakeGbSeconds": 7.68, "perWakeCeilingGbSeconds": 38.4,
     "doGbSeconds": 645.1, "projectedDoGbSeconds": 1290, "doPercentOfFree": 9
   },
   "idleTtlMs": 60000,
+  "wakeWindowMaxMs": 300000,
   "sessions": [
-    { "id": "support-bot", "status": "idle", "idleTtlMs": 60000,
+    { "id": "support-bot", "status": "idle", "idleTtlMs": 60000, "wakeWindowMaxMs": 300000,
       "wakes": { "used": 84, "limit": 300, "remaining": 216, "limited": true } }
   ],
   "warnings": [],
@@ -288,7 +290,10 @@ typed confirmation.
 
 A session does not keep its socket open. `POST /wake`, `POST /start` and `POST /send-text` open a
 window (`IDLE_TTL_MS`, default 60 s) and count against `DAILY_WAKE_LIMIT` when they have to
-connect. `POST /idle` (or `POST /ack` with `"close": true`) closes it immediately.
+connect. A pull (`GET /messages`) taken while that window is live slides it by another `IDLE_TTL_MS`,
+up to `WAKE_WINDOW_MAX_MS` (default 5 min) from the wake, so a drain that runs past 60 s is not cut in
+half — but a pull cannot open a window by itself. `POST /idle` (or `POST /ack` with `"close": true`)
+closes it immediately.
 
 ### `POST /api/sessions/:id/wake?wait=15000`
 

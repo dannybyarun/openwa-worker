@@ -63,7 +63,7 @@ export function UsageDialog({ open, onOpenChange, config }: UsageDialogProps) {
                   used={data.estimate.projectedDoGbSeconds}
                   limit={data.freeTier.durableObjectGbSecondsPerDay}
                   unit="GB-s"
-                  hint={`${data.estimate.perWakeGbSeconds} GB-s per ${Math.round(data.idleTtlMs / 1000)} s wake window (128 MB)`}
+                  hint={`${data.estimate.perWakeGbSeconds} GB-s per ${Math.round(data.idleTtlMs / 1000)} s wake window (128 MB)${data.estimate.perWakeCeilingGbSeconds ? `; up to ${data.estimate.perWakeCeilingGbSeconds} GB-s if the drain slides to ${Math.round((data.wakeWindowMaxMs ?? data.idleTtlMs) / 1000)} s` : ''}`}
                 />
                 <Meter
                   label="Wake budget today"
